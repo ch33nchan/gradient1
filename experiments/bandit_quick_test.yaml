@@ -1,0 +1,39 @@
+# Quick Test Configuration for Development
+# Smaller parameters for fast iteration during development
+
+experiment:
+  name: "bandit_quick_test"
+  type: "bandit"
+  description: "Quick test with reduced parameters"
+
+environment:
+  n_arms: 5
+  non_stationary: false
+  drift_rate: 0.1
+  seed: 123
+
+agent:
+  type: "self_gradient"
+  learning_rate: 0.01
+  meta_learning_rate: 0.001
+  gradient_clip: 1.0
+  buffer_size: 500
+  batch_size: 16
+  exploration_episodes: 50
+  hidden_dim: 32
+
+baselines:
+  - name: "epsilon_greedy"
+    epsilon: 0.1
+  - name: "ucb"
+    ucb_c: 2.0
+
+training:
+  n_episodes: 1000
+  log_interval: 50
+  save_interval: 200
+
+logging:
+  log_dir: "logs"
+  save_metrics: true
+  save_plots: true

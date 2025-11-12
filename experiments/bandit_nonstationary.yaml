@@ -1,0 +1,40 @@
+# Non-Stationary Bandit Experiment
+# Tests adaptation to changing reward distributions
+
+experiment:
+  name: "bandit_nonstationary"
+  type: "bandit"
+  description: "Self-gradient agent in non-stationary environment"
+
+environment:
+  n_arms: 10
+  non_stationary: true
+  drift_rate: 0.15
+  seed: 42
+
+agent:
+  type: "self_gradient"
+  learning_rate: 0.02  # Higher LR for faster adaptation
+  meta_learning_rate: 0.002
+  gradient_clip: 1.0
+  buffer_size: 1500  # Smaller buffer for non-stationary
+  batch_size: 32
+  exploration_episodes: 100
+  hidden_dim: 64
+
+baselines:
+  - name: "epsilon_greedy"
+    epsilon: 0.15  # Higher exploration for non-stationary
+  - name: "ucb"
+    ucb_c: 2.5
+  - name: "thompson"
+
+training:
+  n_episodes: 5000
+  log_interval: 100
+  save_interval: 500
+
+logging:
+  log_dir: "logs"
+  save_metrics: true
+  save_plots: true
