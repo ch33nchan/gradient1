@@ -1,0 +1,1945 @@
+# Project 1: Self-Gradient World Models - Complete Implementation Guide
+
+## Overview
+This project explores agents that explicitly model and predict their own learning dynamics. The agent learns to predict how experiences will change its parameters, then uses these predictions to actively seek beneficial learning experiences.
+
+## Core Thesis
+"An agent that understands how it learns can choose experiences that accelerate its own learning"
+
+---
+
+## Experiment 1.1: Self-Aware Bandits (Week 1)
+
+### Conceptual Foundation
+
+**What we're building**: A multi-armed bandit agent that predicts how pulling each arm will change its beliefs (parameters), then uses these predictions to explore more efficiently than traditional algorithms.
+
+**Why start here**: Bandits have analytically tractable gradients, allowing us to verify our gradient predictions are accurate. This serves as our "unit test" for the entire framework.
+
+**Key innovation**: Traditional exploration (UCB, Thompson Sampling) is based on uncertainty. Our approach is based on predicted learning value - "which action will teach me the most?"
+
+### Mathematical Details
+
+For a softmax bandit with parameters θ ∈ ℝⁿ:
+
+```
+Policy: π(a|θ) = exp(θₐ) / Σᵢ exp(θᵢ)
+Loss: L(θ,a,r) = -r · log π(a|θ)  
+Gradient: ∇θL = -r · (eₐ - π(·|θ))
+Update: θ' = θ - α∇θL
+```
+
+The agent must learn: `g(θ, a) → E[∇θL]` without knowing reward r in advance.
+
+### Complete Implementation
+
+```python
+"""
+Self-Aware Bandit Implementation
+CPU-optimized version with detailed comments
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from collections import deque
+import matplotlib.pyplot as plt
+from typing import Dict, List, Tuple, Optional
+import time
+import json
+from dataclasses import dataclass, asdict
+
+# Set CPU-only mode
+torch.set_num_threads(4)  # Adjust based on your CPU
+torch.set_grad_enabled(True)
+
+@dataclass
+class ExperimentConfig:
+    """Configuration for bandit experiments"""
+    n_arms: int = 10
+    n_episodes: int = 5000
+    learning_rate: float = 0.01
+    meta_learning_rate: float = 0.001
+    gradient_clip: float = 1.0
+    buffer_size: int = 2000
+    batch_size: int = 32
+    exploration_episodes: int = 100
+    device: str = "cpu"
+    seed: int = 42
+    log_interval: int = 100
+    save_interval: int = 500
+
+class GradientPredictor(nn.Module):
+    """
+    Neural network that predicts parameter gradients from (θ, action) pairs.
+    
+    Architecture designed for CPU efficiency:
+    - Smaller hidden dimensions
+    - Fewer layers
+    - Batch normalization for stability
+    """
+    
+    def __init__(self, n_arms: int, hidden_dim: int = 64):
+        super().__init__()
+        self.n_arms = n_arms
+        
+        # Input: concatenated [θ, one_hot_action]
+        input_dim = 2 * n_arms
+        
+        # CPU-optimized architecture
+        self.network = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Dropout(0.1),
+            
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim * 2),
+            nn.Dropout(0.1),
+            
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            
+            nn.Linear(hidden_dim, n_arms)  # Output: predicted gradient
+        )
+        
+        # Initialize weights for stable training
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Xavier initialization for better gradient flow"""
+        for module in self.network:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.constant_(module.bias, 0)
+    
+    def forward(self, theta: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """
+        Predict gradient given parameters and action.
+        
+        Args:
+            theta: Current parameters [batch_size, n_arms] or [n_arms]
+            action: Action indices [batch_size] or scalar
+            
+        Returns:
+            Predicted gradient [batch_size, n_arms] or [n_arms]
+        """
+        # Handle both batched and single inputs
+        if theta.dim() == 1:
+            theta = theta.unsqueeze(0)
+            action = torch.tensor([action]) if not torch.is_tensor(action) else action.unsqueeze(0)
+            squeeze_output = True
+        else:
+            squeeze_output = False
+        
+        batch_size = theta.shape[0]
+        
+        # Create one-hot encoding for actions
+        action_one_hot = F.one_hot(action, num_classes=self.n_arms).float()
+        
+        # Concatenate inputs
+        inputs = torch.cat([theta, action_one_hot], dim=1)
+        
+        # Forward pass
+        predicted_gradient = self.network(inputs)
+        
+        if squeeze_output:
+            predicted_gradient = predicted_gradient.squeeze(0)
+        
+        return predicted_gradient
+
+class MetaValueNetwork(nn.Module):
+    """
+    Evaluates the quality of parameter vectors.
+    Learns what makes a parameter configuration "good" for future learning.
+    """
+    
+    def __init__(self, n_arms: int, hidden_dim: int = 32):
+        super().__init__()
+        
+        self.network = nn.Sequential(
+            nn.Linear(n_arms, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        for module in self.network:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.constant_(module.bias, 0)
+    
+    def forward(self, theta: torch.Tensor) -> torch.Tensor:
+        """
+        Evaluate parameter quality.
+        
+        Higher values indicate parameters that:
+        - Have high confidence on good arms
+        - Maintain useful uncertainty on unexplored arms
+        - Enable efficient future learning
+        """
+        if theta.dim() == 1:
+            theta = theta.unsqueeze(0)
+            squeeze_output = True
+        else:
+            squeeze_output = False
+        
+        value = self.network(theta)
+        
+        if squeeze_output:
+            value = value.squeeze()
+        
+        return value
+
+class ExperienceBuffer:
+    """
+    Efficient experience storage for gradient learning.
+    Optimized for CPU with numpy backend.
+    """
+    
+    def __init__(self, capacity: int, n_arms: int):
+        self.capacity = capacity
+        self.n_arms = n_arms
+        
+        # Pre-allocate arrays for efficiency
+        self.theta_buffer = np.zeros((capacity, n_arms), dtype=np.float32)
+        self.action_buffer = np.zeros(capacity, dtype=np.int64)
+        self.gradient_buffer = np.zeros((capacity, n_arms), dtype=np.float32)
+        self.reward_buffer = np.zeros(capacity, dtype=np.float32)
+        
+        self.position = 0
+        self.size = 0
+    
+    def push(self, theta: torch.Tensor, action: int, gradient: torch.Tensor, reward: float):
+        """Add experience to buffer"""
+        self.theta_buffer[self.position] = theta.detach().numpy()
+        self.action_buffer[self.position] = action
+        self.gradient_buffer[self.position] = gradient.detach().numpy()
+        self.reward_buffer[self.position] = reward
+        
+        self.position = (self.position + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+    
+    def sample(self, batch_size: int) -> Tuple[torch.Tensor, ...]:
+        """Sample batch of experiences"""
+        if self.size < batch_size:
+            indices = np.arange(self.size)
+        else:
+            indices = np.random.choice(self.size, batch_size, replace=False)
+        
+        theta = torch.from_numpy(self.theta_buffer[indices])
+        actions = torch.from_numpy(self.action_buffer[indices])
+        gradients = torch.from_numpy(self.gradient_buffer[indices])
+        rewards = torch.from_numpy(self.reward_buffer[indices])
+        
+        return theta, actions, gradients, rewards
+    
+    def __len__(self):
+        return self.size
+
+class SelfAwareBandit:
+    """
+    Main agent that combines all components.
+    """
+    
+    def __init__(self, config: ExperimentConfig):
+        self.config = config
+        self.n_arms = config.n_arms
+        
+        # Initialize parameters
+        self.theta = torch.zeros(self.n_arms, requires_grad=False)
+        
+        # Initialize networks
+        self.gradient_predictor = GradientPredictor(self.n_arms)
+        self.meta_value = MetaValueNetwork(self.n_arms)
+        
+        # Optimizers
+        self.gp_optimizer = torch.optim.AdamW(
+            self.gradient_predictor.parameters(),
+            lr=config.meta_learning_rate,
+            weight_decay=1e-4
+        )
+        
+        self.mv_optimizer = torch.optim.AdamW(
+            self.meta_value.parameters(),
+            lr=config.meta_learning_rate,
+            weight_decay=1e-4
+        )
+        
+        # Experience buffer
+        self.buffer = ExperienceBuffer(config.buffer_size, self.n_arms)
+        
+        # Tracking
+        self.gradient_prediction_errors = []
+        self.meta_value_losses = []
+        
+    def get_policy(self, theta: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Compute softmax policy from parameters"""
+        if theta is None:
+            theta = self.theta
+        return F.softmax(theta, dim=-1)
+    
+    def act_exploratory(self) -> int:
+        """Random action for initial exploration"""
+        return np.random.randint(self.n_arms)
+    
+    def act_planned(self, planning_horizon: int = 1) -> int:
+        """
+        Choose action by planning future parameter updates.
+        This is the core innovation of the paper.
+        """
+        best_action = 0
+        best_value = -float('inf')
+        
+        current_theta = self.theta.detach()
+        
+        # Evaluate each possible action
+        for action in range(self.n_arms):
+            # Predict gradient from this action
+            with torch.no_grad():
+                predicted_gradient = self.gradient_predictor(current_theta, torch.tensor(action))
+            
+            # Simulate parameter update
+            future_theta = current_theta - self.config.learning_rate * predicted_gradient
+            
+            # Evaluate future parameters
+            with torch.no_grad():
+                future_value = self.meta_value(future_theta).item()
+            
+            # Add exploration bonus based on gradient magnitude
+            # (larger gradients = more learning)
+            exploration_bonus = 0.1 * predicted_gradient.norm().item()
+            total_value = future_value + exploration_bonus
+            
+            if total_value > best_value:
+                best_value = total_value
+                best_action = action
+        
+        return best_action
+    
+    def compute_actual_gradient(self, action: int, reward: float) -> torch.Tensor:
+        """
+        Compute the true REINFORCE gradient.
+        This is what we're trying to predict.
+        """
+        policy = self.get_policy()
+        
+        # ∇θL = -r · (e_a - π)
+        one_hot = F.one_hot(torch.tensor(action), self.n_arms).float()
+        gradient = -reward * (one_hot - policy)
+        
+        return gradient
+    
+    def update_parameters(self, action: int, reward: float):
+        """Update bandit parameters using actual gradient"""
+        gradient = self.compute_actual_gradient(action, reward)
+        
+        # Store experience
+        self.buffer.push(self.theta, action, gradient, reward)
+        
+        # Update parameters
+        self.theta = self.theta - self.config.learning_rate * gradient
+        
+        # Clip parameters for stability
+        self.theta = torch.clamp(self.theta, -5, 5)
+    
+    def train_gradient_predictor(self):
+        """Train the gradient predictor on buffered experiences"""
+        if len(self.buffer) < self.config.batch_size:
+            return 0.0
+        
+        # Sample batch
+        theta_batch, action_batch, gradient_batch, _ = self.buffer.sample(
+            self.config.batch_size
+        )
+        
+        # Predict gradients
+        predicted_gradients = self.gradient_predictor(theta_batch, action_batch)
+        
+        # Compute loss (MSE)
+        loss = F.mse_loss(predicted_gradients, gradient_batch)
+        
+        # Add regularization for gradient magnitudes
+        magnitude_penalty = 0.01 * predicted_gradients.norm(dim=1).mean()
+        total_loss = loss + magnitude_penalty
+        
+        # Optimize
+        self.gp_optimizer.zero_grad()
+        total_loss.backward()
+        
+        # Gradient clipping for stability
+        torch.nn.utils.clip_grad_norm_(
+            self.gradient_predictor.parameters(),
+            self.config.gradient_clip
+        )
+        
+        self.gp_optimizer.step()
+        
+        # Track error
+        self.gradient_prediction_errors.append(loss.item())
+        
+        return loss.item()
+    
+    def train_meta_value(self):
+        """
+        Train meta-value network to recognize good parameters.
+        
+        Uses a self-supervised approach:
+        - Parameters with lower policy entropy are "better" (more decisive)
+        - Parameters that led to high rewards are "better"
+        """
+        if len(self.buffer) < self.config.batch_size:
+            return 0.0
+        
+        # Sample batch
+        theta_batch, _, _, reward_batch = self.buffer.sample(
+            self.config.batch_size
+        )
+        
+        # Compute target values based on multiple criteria
+        with torch.no_grad():
+            # Criterion 1: Policy entropy (lower is better)
+            policies = F.softmax(theta_batch, dim=1)
+            entropies = -(policies * policies.log()).sum(dim=1)
+            
+            # Criterion 2: Reward history (higher is better)
+            normalized_rewards = (reward_batch - reward_batch.mean()) / (reward_batch.std() + 1e-8)
+            
+            # Combine criteria
+            target_values = normalized_rewards - 0.5 * entropies
+        
+        # Predict values
+        predicted_values = self.meta_value(theta_batch).squeeze()
+        
+        # Compute loss
+        loss = F.mse_loss(predicted_values, target_values)
+        
+        # Optimize
+        self.mv_optimizer.zero_grad()
+        loss.backward()
+        
+        torch.nn.utils.clip_grad_norm_(
+            self.meta_value.parameters(),
+            self.config.gradient_clip
+        )
+        
+        self.mv_optimizer.step()
+        
+        # Track loss
+        self.meta_value_losses.append(loss.item())
+        
+        return loss.item()
+    
+    def save_checkpoint(self, path: str, episode: int, metrics: dict):
+        """Save model checkpoint"""
+        checkpoint = {
+            'episode': episode,
+            'theta': self.theta,
+            'gradient_predictor_state': self.gradient_predictor.state_dict(),
+            'meta_value_state': self.meta_value.state_dict(),
+            'gp_optimizer_state': self.gp_optimizer.state_dict(),
+            'mv_optimizer_state': self.mv_optimizer.state_dict(),
+            'config': asdict(self.config),
+            'metrics': metrics
+        }
+        torch.save(checkpoint, path)
+    
+    def load_checkpoint(self, path: str):
+        """Load model checkpoint"""
+        checkpoint = torch.load(path, map_location='cpu')
+        
+        self.theta = checkpoint['theta']
+        self.gradient_predictor.load_state_dict(checkpoint['gradient_predictor_state'])
+        self.meta_value.load_state_dict(checkpoint['meta_value_state'])
+        self.gp_optimizer.load_state_dict(checkpoint['gp_optimizer_state'])
+        self.mv_optimizer.load_state_dict(checkpoint['mv_optimizer_state'])
+        
+        return checkpoint['episode'], checkpoint['metrics']
+
+class BanditEnvironment:
+    """
+    Multi-armed bandit with Gaussian rewards.
+    Includes both stationary and non-stationary variants.
+    """
+    
+    def __init__(self, n_arms: int, seed: int = None, non_stationary: bool = False):
+        self.n_arms = n_arms
+        self.non_stationary = non_stationary
+        
+        if seed is not None:
+            np.random.seed(seed)
+        
+        # Initialize arm means
+        self.reset_arms()
+        
+        self.total_pulls = 0
+        self.arm_pulls = np.zeros(n_arms)
+        
+    def reset_arms(self):
+        """Initialize or reset arm means"""
+        # Create diverse arm means
+        self.arm_means = np.random.randn(self.n_arms) * 0.5
+        
+        # Make some arms clearly better
+        n_good_arms = max(1, self.n_arms // 5)
+        good_arms = np.random.choice(self.n_arms, n_good_arms, replace=False)
+        self.arm_means[good_arms] += np.random.uniform(1, 2, size=n_good_arms)
+        
+        # Make some arms clearly worse
+        n_bad_arms = max(1, self.n_arms // 5)
+        bad_arms = np.random.choice(
+            [i for i in range(self.n_arms) if i not in good_arms],
+            n_bad_arms,
+            replace=False
+        )
+        self.arm_means[bad_arms] -= np.random.uniform(1, 2, size=n_bad_arms)
+        
+    def pull(self, action: int) -> float:
+        """Pull an arm and get reward"""
+        self.total_pulls += 1
+        self.arm_pulls[action] += 1
+        
+        # Non-stationary: occasionally drift means
+        if self.non_stationary and self.total_pulls % 500 == 0:
+            self.arm_means += np.random.randn(self.n_arms) * 0.1
+        
+        # Sample reward
+        reward = np.random.normal(self.arm_means[action], 1.0)
+        
+        return reward
+    
+    def get_optimal_action(self) -> int:
+        """Get the truly optimal action"""
+        return np.argmax(self.arm_means)
+    
+    def get_regret(self, action: int) -> float:
+        """Compute instant regret"""
+        return self.arm_means[self.get_optimal_action()] - self.arm_means[action]
+
+class BaselineAgent:
+    """
+    Standard algorithms for comparison:
+    - Epsilon-greedy
+    - UCB
+    - Thompson Sampling
+    """
+    
+    def __init__(self, n_arms: int, algorithm: str = 'epsilon_greedy'):
+        self.n_arms = n_arms
+        self.algorithm = algorithm
+        
+        # Track estimates and counts
+        self.q_values = np.zeros(n_arms)
+        self.action_counts = np.zeros(n_arms)
+        self.total_count = 0
+        
+        # Algorithm-specific parameters
+        self.epsilon = 0.1
+        self.c = 2.0  # UCB exploration constant
+        
+        # For Thompson Sampling
+        self.alpha = np.ones(n_arms)
+        self.beta = np.ones(n_arms)
+    
+    def act(self) -> int:
+        """Select action based on algorithm"""
+        if self.algorithm == 'epsilon_greedy':
+            if np.random.random() < self.epsilon:
+                return np.random.randint(self.n_arms)
+            else:
+                return np.argmax(self.q_values)
+        
+        elif self.algorithm == 'ucb':
+            if self.total_count < self.n_arms:
+                return self.total_count
+            
+            ucb_values = self.q_values + self.c * np.sqrt(
+                np.log(self.total_count) / (self.action_counts + 1e-8)
+            )
+            return np.argmax(ucb_values)
+        
+        elif self.algorithm == 'thompson':
+            samples = np.random.beta(self.alpha, self.beta)
+            return np.argmax(samples)
+        
+        else:
+            raise ValueError(f"Unknown algorithm: {self.algorithm}")
+    
+    def update(self, action: int, reward: float):
+        """Update estimates based on reward"""
+        self.total_count += 1
+        self.action_counts[action] += 1
+        
+        # Update Q-values (running average)
+        n = self.action_counts[action]
+        self.q_values[action] += (reward - self.q_values[action]) / n
+        
+        # Update Thompson Sampling parameters
+        if self.algorithm == 'thompson':
+            # Convert reward to [0,1] for Beta distribution
+            normalized_reward = (reward + 3) / 6  # Assumes rewards in [-3, 3]
+            normalized_reward = np.clip(normalized_reward, 0, 1)
+            
+            if normalized_reward > 0.5:
+                self.alpha[action] += 1
+            else:
+                self.beta[action] += 1
+
+def run_experiment(config: ExperimentConfig) -> Dict:
+    """
+    Run complete bandit experiment.
+    """
+    # Set random seeds
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    
+    # Create environment
+    env = BanditEnvironment(config.n_arms, seed=config.seed + 1)
+    
+    # Create agents
+    our_agent = SelfAwareBandit(config)
+    baseline_agents = {
+        'epsilon_greedy': BaselineAgent(config.n_arms, 'epsilon_greedy'),
+        'ucb': BaselineAgent(config.n_arms, 'ucb'),
+        'thompson': BaselineAgent(config.n_arms, 'thompson')
+    }
+    
+    # Metrics tracking
+    metrics = {
+        'our_rewards': [],
+        'our_regrets': [],
+        'baseline_rewards': {name: [] for name in baseline_agents},
+        'baseline_regrets': {name: [] for name in baseline_agents},
+        'gradient_errors': [],
+        'meta_value_losses': [],
+        'action_distribution': []
+    }
+    
+    # Training loop
+    print(f"Starting experiment with {config.n_arms} arms for {config.n_episodes} episodes")
+    start_time = time.time()
+    
+    for episode in range(config.n_episodes):
+        # Our agent's turn
+        if episode < config.exploration_episodes:
+            # Initial exploration phase
+            our_action = our_agent.act_exploratory()
+        else:
+            # Planning phase
+            our_action = our_agent.act_planned()
+        
+        our_reward = env.pull(our_action)
+        our_regret = env.get_regret(our_action)
+        
+        # Update our agent
+        our_agent.update_parameters(our_action, our_reward)
+        
+        # Train networks
+        if episode > config.batch_size:
+            gp_loss = our_agent.train_gradient_predictor()
+            mv_loss = our_agent.train_meta_value()
+            metrics['gradient_errors'].append(gp_loss)
+            metrics['meta_value_losses'].append(mv_loss)
+        
+        # Track metrics
+        metrics['our_rewards'].append(our_reward)
+        metrics['our_regrets'].append(our_regret)
+        
+        # Baseline agents
+        for name, agent in baseline_agents.items():
+            action = agent.act()
+            reward = env.pull(action)
+            regret = env.get_regret(action)
+            agent.update(action, reward)
+            
+            metrics['baseline_rewards'][name].append(reward)
+            metrics['baseline_regrets'][name].append(regret)
+        
+        # Track action distribution
+        if episode % 10 == 0:
+            metrics['action_distribution'].append(
+                our_agent.get_policy().detach().numpy().copy()
+            )
+        
+        # Logging
+        if episode % config.log_interval == 0 and episode > 0:
+            elapsed = time.time() - start_time
+            
+            print(f"\nEpisode {episode}/{config.n_episodes} ({elapsed:.1f}s)")
+            print(f"  Our agent:")
+            print(f"    Avg reward: {np.mean(metrics['our_rewards'][-100:]):.3f}")
+            print(f"    Avg regret: {np.mean(metrics['our_regrets'][-100:]):.3f}")
+            
+            if metrics['gradient_errors']:
+                print(f"    Gradient error: {np.mean(metrics['gradient_errors'][-100:]):.6f}")
+            
+            for name in baseline_agents:
+                print(f"  {name}:")
+                print(f"    Avg reward: {np.mean(metrics['baseline_rewards'][name][-100:]):.3f}")
+                print(f"    Avg regret: {np.mean(metrics['baseline_regrets'][name][-100:]):.3f}")
+            
+            # Show current policy
+            policy = our_agent.get_policy().detach().numpy()
+            top_arms = np.argsort(policy)[-3:][::-1]
+            print(f"  Top 3 arms: {top_arms} with probs {policy[top_arms]}")
+        
+        # Save checkpoint
+        if episode % config.save_interval == 0 and episode > 0:
+            checkpoint_path = f"checkpoint_bandit_{episode}.pt"
+            our_agent.save_checkpoint(checkpoint_path, episode, metrics)
+            print(f"  Saved checkpoint to {checkpoint_path}")
+    
+    # Final statistics
+    print("\n" + "="*50)
+    print("FINAL RESULTS")
+    print("="*50)
+    
+    final_window = 500
+    print(f"\nFinal {final_window} episodes:")
+    print(f"  Our agent: {np.mean(metrics['our_rewards'][-final_window:]):.3f} ± {np.std(metrics['our_rewards'][-final_window:]):.3f}")
+    
+    for name in baseline_agents:
+        rewards = metrics['baseline_rewards'][name][-final_window:]
+        print(f"  {name}: {np.mean(rewards):.3f} ± {np.std(rewards):.3f}")
+    
+    # Cumulative regret
+    print(f"\nCumulative regret:")
+    print(f"  Our agent: {np.sum(metrics['our_regrets']):.1f}")
+    for name in baseline_agents:
+        print(f"  {name}: {np.sum(metrics['baseline_regrets'][name]):.1f}")
+    
+    return metrics
+
+def visualize_results(metrics: Dict):
+    """Create comprehensive visualization of results"""
+    import matplotlib.pyplot as plt
+    
+    fig = plt.figure(figsize=(16, 10))
+    
+    # 1. Cumulative rewards
+    ax1 = plt.subplot(2, 3, 1)
+    ax1.plot(np.cumsum(metrics['our_rewards']), label='Self-Aware', linewidth=2)
+    for name, rewards in metrics['baseline_rewards'].items():
+        ax1.plot(np.cumsum(rewards), label=name, alpha=0.7)
+    ax1.set_xlabel('Episode')
+    ax1.set_ylabel('Cumulative Reward')
+    ax1.set_title('Cumulative Rewards')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. Cumulative regret
+    ax2 = plt.subplot(2, 3, 2)
+    ax2.plot(np.cumsum(metrics['our_regrets']), label='Self-Aware', linewidth=2)
+    for name, regrets in metrics['baseline_regrets'].items():
+        ax2.plot(np.cumsum(regrets), label=name, alpha=0.7)
+    ax2.set_xlabel('Episode')
+    ax2.set_ylabel('Cumulative Regret')
+    ax2.set_title('Cumulative Regret (lower is better)')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # 3. Rolling average rewards
+    ax3 = plt.subplot(2, 3, 3)
+    window = 100
+    
+    def rolling_mean(x, window):
+        if len(x) < window:
+            return x
+        return np.convolve(x, np.ones(window)/window, 'valid')
+    
+    ax3.plot(rolling_mean(metrics['our_rewards'], window), label='Self-Aware', linewidth=2)
+    for name, rewards in metrics['baseline_rewards'].items():
+        ax3.plot(rolling_mean(rewards, window), label=name, alpha=0.7)
+    ax3.set_xlabel('Episode')
+    ax3.set_ylabel('Average Reward')
+    ax3.set_title(f'{window}-Episode Rolling Average')
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    # 4. Gradient prediction error
+    ax4 = plt.subplot(2, 3, 4)
+    if metrics['gradient_errors']:
+        ax4.plot(metrics['gradient_errors'])
+        ax4.set_xlabel('Training Step')
+        ax4.set_ylabel('MSE')
+        ax4.set_title('Gradient Prediction Error')
+        ax4.set_yscale('log')
+        ax4.grid(True, alpha=0.3)
+    
+    # 5. Action distribution evolution
+    ax5 = plt.subplot(2, 3, 5)
+    if metrics['action_distribution']:
+        action_dist = np.array(metrics['action_distribution'])
+        im = ax5.imshow(action_dist.T, aspect='auto', cmap='hot')
+        ax5.set_xlabel('Episode (x10)')
+        ax5.set_ylabel('Arm')
+        ax5.set_title('Policy Evolution')
+        plt.colorbar(im, ax=ax5)
+    
+    # 6. Final performance comparison
+    ax6 = plt.subplot(2, 3, 6)
+    final_window = 500
+    
+    agents = ['Self-Aware'] + list(metrics['baseline_rewards'].keys())
+    final_rewards = [np.mean(metrics['our_rewards'][-final_window:])]
+    final_stds = [np.std(metrics['our_rewards'][-final_window:])]
+    
+    for name, rewards in metrics['baseline_rewards'].items():
+        final_rewards.append(np.mean(rewards[-final_window:]))
+        final_stds.append(np.std(rewards[-final_window:]))
+    
+    x_pos = np.arange(len(agents))
+    ax6.bar(x_pos, final_rewards, yerr=final_stds, capsize=5)
+    ax6.set_xticks(x_pos)
+    ax6.set_xticklabels(agents, rotation=45)
+    ax6.set_ylabel('Average Reward')
+    ax6.set_title(f'Final {final_window} Episodes')
+    ax6.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    plt.savefig('bandit_results.png', dpi=150, bbox_inches='tight')
+    plt.show()
+
+if __name__ == "__main__":
+    # Configure experiment
+    config = ExperimentConfig(
+        n_arms=10,
+        n_episodes=5000,
+        learning_rate=0.01,
+        meta_learning_rate=0.001,
+        batch_size=32,
+        exploration_episodes=100
+    )
+    
+    # Run experiment
+    print("Starting Self-Aware Bandit Experiment")
+    print(f"Configuration: {config}")
+    
+    metrics = run_experiment(config)
+    
+    # Visualize results
+    visualize_results(metrics)
+    
+    # Save metrics
+    with open('bandit_metrics.json', 'w') as f:
+        # Convert numpy arrays to lists for JSON serialization
+        json_metrics = {
+            'our_rewards': metrics['our_rewards'],
+            'our_regrets': metrics['our_regrets'],
+            'gradient_errors': metrics['gradient_errors'],
+            'meta_value_losses': metrics['meta_value_losses']
+        }
+        json.dump(json_metrics, f, indent=2)
+    
+    print("\nExperiment complete! Results saved to bandit_results.png and bandit_metrics.json")
+```
+
+---
+
+## Experiment 1.2: Grid World with Full Gradient Dynamics (Weeks 2-3)
+
+### Conceptual Foundation
+
+**Scaling up**: Now we predict gradients for entire neural network policies learning from trajectories, not just single-step updates.
+
+**Key challenge**: Trajectories create complex gradient flows through time. We need to encode trajectory → gradient mappings.
+
+**Innovation**: Use trajectory encoding + parameter encoding to predict how experiences change the policy.
+
+### Complete Implementation
+
+```python
+"""
+Self-Gradient World Models for Grid World
+CPU-optimized implementation with full trajectory gradient prediction
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from collections import deque, namedtuple
+import matplotlib.pyplot as plt
+import gym
+from typing import List, Dict, Tuple, Optional
+import time
+import pickle
+from dataclasses import dataclass
+import json
+
+# CPU optimization
+torch.set_num_threads(4)
+
+# Data structures
+Transition = namedtuple('Transition', 
+    ['state', 'action', 'reward', 'next_state', 'done'])
+
+@dataclass 
+class GridWorldConfig:
+    """Configuration for grid world experiments"""
+    env_name: str = 'CartPole-v1'
+    state_dim: int = 4
+    action_dim: int = 2
+    hidden_dim: int = 64
+    trajectory_encoding_dim: int = 32
+    
+    # Learning rates
+    policy_lr: float = 0.01
+    value_lr: float = 0.01
+    gradient_model_lr: float = 0.001
+    meta_value_lr: float = 0.001
+    
+    # Training
+    n_episodes: int = 2000
+    max_steps: int = 500
+    batch_size: int = 16
+    buffer_size: int = 500
+    
+    # Planning
+    planning_horizon: int = 10
+    n_trajectory_samples: int = 5
+    start_planning_episode: int = 100
+    
+    # CPU optimization
+    device: str = 'cpu'
+    num_workers: int = 4
+    
+    # Logging
+    log_interval: int = 50
+    save_interval: int = 200
+
+class TrajectoryEncoder(nn.Module):
+    """
+    Encodes variable-length trajectories into fixed-size representations.
+    CPU-optimized with efficient attention mechanism.
+    """
+    
+    def __init__(self, state_dim: int, action_dim: int, 
+                 hidden_dim: int = 64, encoding_dim: int = 32):
+        super().__init__()
+        
+        # Transition embedding
+        transition_dim = state_dim * 2 + action_dim + 1  # s, a, r, s'
+        
+        self.transition_encoder = nn.Sequential(
+            nn.Linear(transition_dim, hidden_dim),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(0.1)
+        )
+        
+        # Temporal processing (GRU is more CPU-efficient than LSTM)
+        self.gru = nn.GRU(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+        
+        # Attention pooling
+        self.attention_key = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.attention_query = nn.Parameter(torch.randn(1, hidden_dim // 2))
+        
+        # Output projection
+        self.output = nn.Linear(hidden_dim, encoding_dim)
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+    
+    def forward(self, trajectory: List[Transition]) -> torch.Tensor:
+        """
+        Encode trajectory into fixed-size vector.
+        
+        Returns:
+            encoding: [encoding_dim] tensor
+        """
+        if not trajectory:
+            return torch.zeros(self.encoding_dim)
+        
+        # Convert trajectory to tensor format
+        encoded_transitions = []
+        
+        for t in trajectory:
+            # Create transition vector
+            action_one_hot = F.one_hot(
+                torch.tensor(t.action),
+                num_classes=self.action_dim
+            ).float()
+            
+            transition_vec = torch.cat([
+                t.state.flatten(),
+                action_one_hot,
+                torch.tensor([t.reward]),
+                t.next_state.flatten()
+            ])
+            
+            # Encode transition
+            encoded = self.transition_encoder(transition_vec)
+            encoded_transitions.append(encoded)
+        
+        # Stack into sequence
+        sequence = torch.stack(encoded_transitions).unsqueeze(0)
+        
+        # Process with GRU
+        gru_out, hidden = self.gru(sequence)
+        gru_out = gru_out.squeeze(0)  # [seq_len, hidden_dim]
+        
+        # Attention pooling
+        keys = self.attention_key(gru_out)  # [seq_len, hidden_dim//2]
+        scores = torch.matmul(keys, self.attention_query.T).squeeze()  # [seq_len]
+        weights = F.softmax(scores, dim=0)
+        
+        # Weighted average
+        attended = torch.sum(gru_out * weights.unsqueeze(1), dim=0)
+        
+        # Output projection
+        encoding = self.output(attended)
+        
+        return encoding
+
+class GradientWorldModel(nn.Module):
+    """
+    Predicts parameter gradients from current parameters and trajectory.
+    This is the core technical innovation.
+    """
+    
+    def __init__(self, param_dim: int, state_dim: int, action_dim: int,
+                 hidden_dim: int = 128, encoding_dim: int = 32):
+        super().__init__()
+        
+        self.param_dim = param_dim
+        
+        # Trajectory encoder
+        self.trajectory_encoder = TrajectoryEncoder(
+            state_dim, action_dim, hidden_dim, encoding_dim
+        )
+        
+        # Parameter encoder
+        self.param_encoder = nn.Sequential(
+            nn.Linear(param_dim, hidden_dim),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, encoding_dim)
+        )
+        
+        # Gradient decoder with skip connections
+        combined_dim = encoding_dim * 2
+        
+        self.gradient_decoder = nn.Sequential(
+            nn.Linear(combined_dim, hidden_dim),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(0.1),
+            
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_dim * 2),
+            nn.Dropout(0.1),
+            
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            
+            nn.Linear(hidden_dim, param_dim)
+        )
+        
+        # Auxiliary heads for multi-task learning
+        self.value_head = nn.Linear(combined_dim, 1)
+        self.trajectory_length_head = nn.Linear(combined_dim, 1)
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.1)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+    
+    def forward(self, params: torch.Tensor, trajectory: List[Transition]):
+        """
+        Predict gradient from parameters and trajectory.
+        
+        Returns:
+            gradient: [param_dim] predicted gradient
+            auxiliary: dict with auxiliary predictions
+        """
+        # Encode trajectory
+        traj_encoding = self.trajectory_encoder(trajectory)
+        
+        # Encode parameters
+        param_encoding = self.param_encoder(params.flatten())
+        
+        # Combine encodings
+        combined = torch.cat([param_encoding, traj_encoding])
+        
+        # Predict gradient
+        gradient = self.gradient_decoder(combined)
+        
+        # Auxiliary predictions (help with learning)
+        value = self.value_head(combined)
+        length = self.trajectory_length_head(combined)
+        
+        auxiliary = {
+            'value': value,
+            'length': length
+        }
+        
+        return gradient, auxiliary
+
+class PolicyNetwork(nn.Module):
+    """Simple policy network for grid world"""
+    
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        
+        self.network = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, action_dim)
+        )
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, state):
+        return self.network(state)
+    
+    def get_action(self, state, deterministic=False):
+        """Sample action from policy"""
+        logits = self(state)
+        probs = F.softmax(logits, dim=-1)
+        
+        if deterministic:
+            action = torch.argmax(probs).item()
+        else:
+            action = torch.multinomial(probs, 1).item()
+        
+        return action, probs
+
+class ValueNetwork(nn.Module):
+    """Value function for advantage estimation"""
+    
+    def __init__(self, state_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        
+        self.network = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, state):
+        return self.network(state)
+
+class MetaValueNetwork(nn.Module):
+    """
+    Evaluates quality of parameter vectors.
+    Learns what parameter configurations lead to good future learning.
+    """
+    
+    def __init__(self, param_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        
+        self.network = nn.Sequential(
+            nn.Linear(param_dim, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, params):
+        if params.dim() == 1:
+            params = params.unsqueeze(0)
+        value = self.network(params)
+        return value.squeeze()
+
+class SimpleWorldModel:
+    """
+    Simple world model for trajectory imagination.
+    Uses learned dynamics or random rollouts.
+    """
+    
+    def __init__(self, state_dim: int, action_dim: int):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        
+        # For now, use random perturbations
+        # In full implementation, this would be a learned dynamics model
+        
+    def imagine_trajectory(self, initial_state: torch.Tensor, 
+                          policy: PolicyNetwork, 
+                          horizon: int = 10) -> List[Transition]:
+        """
+        Imagine trajectory using current policy.
+        Simplified version - in practice, use learned dynamics.
+        """
+        trajectory = []
+        state = initial_state.clone()
+        
+        for t in range(horizon):
+            # Get action from policy
+            action, _ = policy.get_action(state)
+            
+            # Simple dynamics: add noise
+            next_state = state + torch.randn_like(state) * 0.1
+            
+            # Simple reward: negative distance from origin
+            reward = -torch.norm(state).item() * 0.1
+            
+            # Random termination
+            done = np.random.random() < 0.05
+            
+            trajectory.append(Transition(
+                state, action, reward, next_state, done
+            ))
+            
+            if done:
+                break
+            
+            state = next_state
+        
+        return trajectory
+
+class TrajectoryBuffer:
+    """
+    Efficient storage for trajectories and gradients.
+    CPU-optimized with pre-allocation.
+    """
+    
+    def __init__(self, capacity: int, param_dim: int):
+        self.capacity = capacity
+        self.param_dim = param_dim
+        
+        # Storage
+        self.trajectories = deque(maxlen=capacity)
+        self.parameters = deque(maxlen=capacity)
+        self.gradients = deque(maxlen=capacity)
+        self.returns = deque(maxlen=capacity)
+        
+    def push(self, trajectory: List[Transition], 
+             parameters: torch.Tensor,
+             gradient: torch.Tensor,
+             returns: float):
+        """Add experience to buffer"""
+        
+        self.trajectories.append(trajectory)
+        self.parameters.append(parameters.detach().clone())
+        self.gradients.append(gradient.detach().clone())
+        self.returns.append(returns)
+    
+    def sample(self, batch_size: int):
+        """Sample batch of experiences"""
+        if len(self.trajectories) < batch_size:
+            indices = list(range(len(self.trajectories)))
+        else:
+            indices = np.random.choice(len(self.trajectories), 
+                                     batch_size, replace=False)
+        
+        batch = []
+        for i in indices:
+            batch.append((
+                self.trajectories[i],
+                self.parameters[i],
+                self.gradients[i],
+                self.returns[i]
+            ))
+        
+        return batch
+    
+    def __len__(self):
+        return len(self.trajectories)
+
+class SelfGradientAgent:
+    """
+    Complete agent combining all components.
+    """
+    
+    def __init__(self, config: GridWorldConfig):
+        self.config = config
+        
+        # Networks
+        self.policy = PolicyNetwork(config.state_dim, config.action_dim, 
+                                   config.hidden_dim)
+        self.value = ValueNetwork(config.state_dim, config.hidden_dim)
+        
+        # Gradient prediction
+        param_dim = sum(p.numel() for p in self.policy.parameters())
+        self.gradient_model = GradientWorldModel(
+            param_dim, config.state_dim, config.action_dim,
+            config.hidden_dim, config.trajectory_encoding_dim
+        )
+        
+        # Meta-value
+        self.meta_value = MetaValueNetwork(param_dim, config.hidden_dim)
+        
+        # World model for planning
+        self.world_model = SimpleWorldModel(config.state_dim, config.action_dim)
+        
+        # Optimizers
+        self.policy_optimizer = torch.optim.Adam(
+            self.policy.parameters(), lr=config.policy_lr
+        )
+        self.value_optimizer = torch.optim.Adam(
+            self.value.parameters(), lr=config.value_lr
+        )
+        self.gradient_model_optimizer = torch.optim.Adam(
+            self.gradient_model.parameters(), lr=config.gradient_model_lr
+        )
+        self.meta_value_optimizer = torch.optim.Adam(
+            self.meta_value.parameters(), lr=config.meta_value_lr
+        )
+        
+        # Buffer
+        self.buffer = TrajectoryBuffer(config.buffer_size, param_dim)
+        
+        # Tracking
+        self.gradient_errors = []
+        self.meta_values = []
+    
+    def get_policy_params(self) -> torch.Tensor:
+        """Get flattened policy parameters"""
+        params = []
+        for p in self.policy.parameters():
+            params.append(p.data.flatten())
+        return torch.cat(params)
+    
+    def set_policy_params(self, params: torch.Tensor):
+        """Set policy parameters from flattened tensor"""
+        idx = 0
+        for p in self.policy.parameters():
+            numel = p.numel()
+            p.data = params[idx:idx+numel].reshape(p.shape)
+            idx += numel
+    
+    def act(self, state: torch.Tensor, deterministic: bool = False) -> int:
+        """Select action using policy"""
+        with torch.no_grad():
+            action, _ = self.policy.get_action(state, deterministic)
+        return action
+    
+    def plan_action(self, state: torch.Tensor) -> int:
+        """
+        Plan action by imagining future trajectories and their gradients.
+        Core innovation of the paper.
+        """
+        best_action = None
+        best_value = -float('inf')
+        
+        current_params = self.get_policy_params()
+        
+        # Try each possible first action
+        for first_action in range(self.config.action_dim):
+            total_value = 0
+            
+            # Sample multiple trajectories starting with this action
+            for _ in range(self.config.n_trajectory_samples):
+                # Create modified initial state for this action
+                trajectory = []
+                current_state = state.clone()
+                
+                # Force first action
+                next_state = current_state + torch.randn_like(state) * 0.1
+                reward = -torch.norm(current_state).item() * 0.1
+                
+                trajectory.append(Transition(
+                    current_state, first_action, reward, next_state, False
+                ))
+                
+                # Continue with policy
+                remaining = self.world_model.imagine_trajectory(
+                    next_state, self.policy, 
+                    self.config.planning_horizon - 1
+                )
+                trajectory.extend(remaining)
+                
+                # Predict gradient from this trajectory
+                with torch.no_grad():
+                    predicted_gradient, aux = self.gradient_model(
+                        current_params, trajectory
+                    )
+                
+                # Simulate parameter update
+                future_params = current_params - \
+                               self.config.policy_lr * predicted_gradient
+                
+                # Evaluate future parameters
+                with torch.no_grad():
+                    future_value = self.meta_value(future_params).item()
+                
+                total_value += future_value
+            
+            # Average over samples
+            avg_value = total_value / self.config.n_trajectory_samples
+            
+            if avg_value > best_value:
+                best_value = avg_value
+                best_action = first_action
+        
+        return best_action if best_action is not None else self.act(state)
+    
+    def compute_returns(self, trajectory: List[Transition], 
+                       gamma: float = 0.99) -> torch.Tensor:
+        """Compute discounted returns for trajectory"""
+        returns = []
+        G = 0
+        
+        for t in reversed(trajectory):
+            G = t.reward + gamma * G * (1 - t.done)
+            returns.append(G)
+        
+        returns = torch.tensor(list(reversed(returns)))
+        
+        # Normalize returns
+        if len(returns) > 1:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
+        
+        return returns
+    
+    def compute_advantages(self, trajectory: List[Transition], 
+                          returns: torch.Tensor) -> torch.Tensor:
+        """Compute advantages using value function"""
+        advantages = []
+        
+        for i, t in enumerate(trajectory):
+            with torch.no_grad():
+                value = self.value(t.state).item()
+            advantage = returns[i] - value
+            advantages.append(advantage)
+        
+        advantages = torch.tensor(advantages)
+        
+        # Normalize advantages
+        if len(advantages) > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        
+        return advantages
+    
+    def compute_policy_gradient(self, trajectory: List[Transition]) -> torch.Tensor:
+        """
+        Compute actual policy gradient using REINFORCE.
+        This is what we're trying to predict.
+        """
+        returns = self.compute_returns(trajectory)
+        advantages = self.compute_advantages(trajectory, returns)
+        
+        # Zero gradients
+        self.policy_optimizer.zero_grad()
+        
+        # Compute policy gradient
+        total_loss = 0
+        
+        for i, t in enumerate(trajectory):
+            logits = self.policy(t.state)
+            log_probs = F.log_softmax(logits, dim=-1)
+            
+            # REINFORCE loss
+            loss = -log_probs[t.action] * advantages[i]
+            total_loss = total_loss + loss
+        
+        # Compute gradients
+        total_loss.backward()
+        
+        # Extract gradients
+        gradients = []
+        for p in self.policy.parameters():
+            gradients.append(p.grad.flatten())
+        
+        return torch.cat(gradients)
+    
+    def train_on_trajectory(self, trajectory: List[Transition]):
+        """
+        Main training step:
+        1. Compute actual gradient
+        2. Store for gradient predictor training
+        3. Update policy and value
+        4. Train auxiliary networks
+        """
+        # Get current parameters
+        current_params = self.get_policy_params()
+        
+        # Compute actual gradient
+        actual_gradient = self.compute_policy_gradient(trajectory)
+        
+        # Compute returns for storage
+        returns = self.compute_returns(trajectory)
+        total_return = sum(t.reward for t in trajectory)
+        
+        # Store experience
+        self.buffer.push(trajectory, current_params, 
+                        actual_gradient, total_return)
+        
+        # Update policy (gradient already computed)
+        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
+        self.policy_optimizer.step()
+        
+        # Update value network
+        self.update_value_network(trajectory)
+        
+        # Train gradient predictor
+        if len(self.buffer) >= self.config.batch_size:
+            grad_error = self.train_gradient_predictor()
+            self.gradient_errors.append(grad_error)
+        
+        # Train meta-value
+        if len(self.buffer) >= self.config.batch_size:
+            self.train_meta_value()
+    
+    def update_value_network(self, trajectory: List[Transition]):
+        """Update value network using TD learning"""
+        self.value_optimizer.zero_grad()
+        
+        returns = self.compute_returns(trajectory)
+        total_loss = 0
+        
+        for i, t in enumerate(trajectory):
+            value = self.value(t.state)
+            target = returns[i]
+            loss = F.mse_loss(value, target)
+            total_loss = total_loss + loss
+        
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.value.parameters(), 0.5)
+        self.value_optimizer.step()
+    
+    def train_gradient_predictor(self) -> float:
+        """Train gradient predictor on buffered experiences"""
+        batch = self.buffer.sample(self.config.batch_size)
+        
+        total_loss = 0
+        total_grad_loss = 0
+        
+        for trajectory, params, actual_grad, returns in batch:
+            # Predict gradient
+            predicted_grad, auxiliary = self.gradient_model(params, trajectory)
+            
+            # Gradient prediction loss
+            grad_loss = F.mse_loss(predicted_grad, actual_grad)
+            
+            # Auxiliary losses
+            value_loss = F.mse_loss(auxiliary['value'], torch.tensor([returns]))
+            length_loss = F.mse_loss(
+                auxiliary['length'], 
+                torch.tensor([float(len(trajectory))])
+            )
+            
+            # Combined loss
+            loss = grad_loss + 0.1 * value_loss + 0.01 * length_loss
+            total_loss = total_loss + loss
+            total_grad_loss = total_grad_loss + grad_loss
+        
+        # Optimize
+        self.gradient_model_optimizer.zero_grad()
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            self.gradient_model.parameters(), 1.0
+        )
+        self.gradient_model_optimizer.step()
+        
+        return (total_grad_loss / len(batch)).item()
+    
+    def train_meta_value(self):
+        """Train meta-value to recognize good parameters"""
+        batch = self.buffer.sample(self.config.batch_size)
+        
+        # Prepare batch
+        params_batch = []
+        value_targets = []
+        
+        for _, params, _, returns in batch:
+            params_batch.append(params)
+            # Simple target: normalize returns
+            value_targets.append(returns)
+        
+        params_batch = torch.stack(params_batch)
+        value_targets = torch.tensor(value_targets)
+        
+        # Normalize targets
+        value_targets = (value_targets - value_targets.mean()) / (value_targets.std() + 1e-8)
+        
+        # Predict values
+        predicted_values = self.meta_value(params_batch)
+        
+        # Loss
+        loss = F.mse_loss(predicted_values, value_targets)
+        
+        # Optimize
+        self.meta_value_optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            self.meta_value.parameters(), 1.0
+        )
+        self.meta_value_optimizer.step()
+        
+        self.meta_values.append(predicted_values.mean().item())
+    
+    def save_checkpoint(self, path: str, episode: int, metrics: dict):
+        """Save complete checkpoint"""
+        checkpoint = {
+            'episode': episode,
+            'policy_state': self.policy.state_dict(),
+            'value_state': self.value.state_dict(),
+            'gradient_model_state': self.gradient_model.state_dict(),
+            'meta_value_state': self.meta_value.state_dict(),
+            'policy_opt_state': self.policy_optimizer.state_dict(),
+            'value_opt_state': self.value_optimizer.state_dict(),
+            'gm_opt_state': self.gradient_model_optimizer.state_dict(),
+            'mv_opt_state': self.meta_value_optimizer.state_dict(),
+            'config': self.config,
+            'metrics': metrics
+        }
+        torch.save(checkpoint, path)
+
+def run_gridworld_experiment(config: GridWorldConfig) -> Dict:
+    """
+    Run complete grid world experiment.
+    """
+    # Setup environment
+    env = gym.make(config.env_name)
+    config.state_dim = env.observation_space.shape[0]
+    config.action_dim = env.action_space.n
+    
+    # Create agent
+    agent = SelfGradientAgent(config)
+    
+    # Metrics
+    metrics = {
+        'episode_rewards': [],
+        'episode_lengths': [],
+        'gradient_errors': [],
+        'meta_values': [],
+        'planning_improvements': []
+    }
+    
+    print(f"Starting Grid World Experiment")
+    print(f"Environment: {config.env_name}")
+    print(f"State dim: {config.state_dim}, Action dim: {config.action_dim}")
+    print("-" * 50)
+    
+    start_time = time.time()
+    
+    for episode in range(config.n_episodes):
+        # Reset environment
+        state = env.reset()
+        state = torch.tensor(state, dtype=torch.float32)
+        
+        trajectory = []
+        episode_reward = 0
+        
+        # Collect episode
+        done = False
+        steps = 0
+        
+        while not done and steps < config.max_steps:
+            # Choose action
+            if episode < config.start_planning_episode:
+                # Initial exploration/learning phase
+                action = agent.act(state)
+            else:
+                # Planning phase
+                if steps == 0:  # Only plan for first action
+                    action = agent.plan_action(state)
+                else:
+                    action = agent.act(state)
+            
+            # Environment step
+            next_state, reward, done, _ = env.step(action)
+            next_state = torch.tensor(next_state, dtype=torch.float32)
+            
+            # Store transition
+            trajectory.append(Transition(
+                state, action, reward, next_state, done
+            ))
+            
+            episode_reward += reward
+            state = next_state
+            steps += 1
+        
+        # Train on trajectory
+        agent.train_on_trajectory(trajectory)
+        
+        # Store metrics
+        metrics['episode_rewards'].append(episode_reward)
+        metrics['episode_lengths'].append(steps)
+        
+        if agent.gradient_errors:
+            metrics['gradient_errors'].append(agent.gradient_errors[-1])
+        
+        if agent.meta_values:
+            metrics['meta_values'].append(agent.meta_values[-1])
+        
+        # Logging
+        if episode % config.log_interval == 0 and episode > 0:
+            elapsed = time.time() - start_time
+            
+            avg_reward = np.mean(metrics['episode_rewards'][-100:])
+            avg_length = np.mean(metrics['episode_lengths'][-100:])
+            
+            print(f"\nEpisode {episode}/{config.n_episodes} ({elapsed:.1f}s)")
+            print(f"  Avg reward (100 ep): {avg_reward:.2f}")
+            print(f"  Avg length (100 ep): {avg_length:.2f}")
+            
+            if metrics['gradient_errors']:
+                avg_grad_error = np.mean(metrics['gradient_errors'][-50:])
+                print(f"  Gradient error: {avg_grad_error:.6f}")
+            
+            if episode >= config.start_planning_episode:
+                print(f"  Planning: ACTIVE")
+        
+        # Save checkpoint
+        if episode % config.save_interval == 0 and episode > 0:
+            checkpoint_path = f"gridworld_checkpoint_{episode}.pt"
+            agent.save_checkpoint(checkpoint_path, episode, metrics)
+            print(f"  Saved checkpoint: {checkpoint_path}")
+    
+    env.close()
+    
+    # Final summary
+    print("\n" + "="*50)
+    print("EXPERIMENT COMPLETE")
+    print("="*50)
+    
+    final_window = min(500, len(metrics['episode_rewards']))
+    print(f"\nFinal {final_window} episodes:")
+    print(f"  Avg reward: {np.mean(metrics['episode_rewards'][-final_window:]):.2f}")
+    print(f"  Avg length: {np.mean(metrics['episode_lengths'][-final_window:]):.2f}")
+    
+    if metrics['gradient_errors']:
+        print(f"  Final gradient error: {metrics['gradient_errors'][-1]:.6f}")
+    
+    return metrics
+
+def visualize_gridworld_results(metrics: Dict):
+    """Comprehensive visualization of grid world results"""
+    
+    fig = plt.figure(figsize=(15, 10))
+    
+    # Episode rewards
+    ax1 = plt.subplot(2, 3, 1)
+    ax1.plot(metrics['episode_rewards'], alpha=0.5)
+    
+    # Rolling average
+    window = 100
+    if len(metrics['episode_rewards']) >= window:
+        rolling_avg = np.convolve(
+            metrics['episode_rewards'], 
+            np.ones(window)/window, 
+            'valid'
+        )
+        ax1.plot(range(window-1, len(metrics['episode_rewards'])), 
+                rolling_avg, 'r-', linewidth=2)
+    
+    ax1.set_xlabel('Episode')
+    ax1.set_ylabel('Reward')
+    ax1.set_title('Episode Rewards')
+    ax1.grid(True, alpha=0.3)
+    
+    # Episode lengths
+    ax2 = plt.subplot(2, 3, 2)
+    ax2.plot(metrics['episode_lengths'], alpha=0.5)
+    
+    if len(metrics['episode_lengths']) >= window:
+        rolling_avg = np.convolve(
+            metrics['episode_lengths'],
+            np.ones(window)/window,
+            'valid'
+        )
+        ax2.plot(range(window-1, len(metrics['episode_lengths'])),
+                rolling_avg, 'r-', linewidth=2)
+    
+    ax2.set_xlabel('Episode')
+    ax2.set_ylabel('Length')
+    ax2.set_title('Episode Lengths')
+    ax2.grid(True, alpha=0.3)
+    
+    # Gradient prediction error
+    ax3 = plt.subplot(2, 3, 3)
+    if metrics['gradient_errors']:
+        ax3.plot(metrics['gradient_errors'])
+        ax3.set_xlabel('Training Step')
+        ax3.set_ylabel('MSE')
+        ax3.set_title('Gradient Prediction Error')
+        ax3.set_yscale('log')
+        ax3.grid(True, alpha=0.3)
+    
+    # Meta values
+    ax4 = plt.subplot(2, 3, 4)
+    if metrics['meta_values']:
+        ax4.plot(metrics['meta_values'])
+        ax4.set_xlabel('Training Step')
+        ax4.set_ylabel('Value')
+        ax4.set_title('Meta-Value Predictions')
+        ax4.grid(True, alpha=0.3)
+    
+    # Learning curve comparison
+    ax5 = plt.subplot(2, 3, 5)
+    
+    # Divide into phases
+    if len(metrics['episode_rewards']) > 200:
+        phase_size = 100
+        phases = []
+        phase_means = []
+        phase_stds = []
+        
+        for i in range(0, len(metrics['episode_rewards']), phase_size):
+            phase_rewards = metrics['episode_rewards'][i:i+phase_size]
+            if len(phase_rewards) > 0:
+                phases.append(i + phase_size/2)
+                phase_means.append(np.mean(phase_rewards))
+                phase_stds.append(np.std(phase_rewards))
+        
+        ax5.errorbar(phases, phase_means, yerr=phase_stds, 
+                    marker='o', capsize=5)
+        ax5.set_xlabel('Episode')
+        ax5.set_ylabel('Average Reward')
+        ax5.set_title('Learning Phases')
+        ax5.grid(True, alpha=0.3)
+    
+    # Final performance distribution
+    ax6 = plt.subplot(2, 3, 6)
+    final_rewards = metrics['episode_rewards'][-min(500, len(metrics['episode_rewards'])):]
+    ax6.hist(final_rewards, bins=30, alpha=0.7, edgecolor='black')
+    ax6.axvline(np.mean(final_rewards), color='r', linestyle='--', 
+               label=f'Mean: {np.mean(final_rewards):.2f}')
+    ax6.set_xlabel('Reward')
+    ax6.set_ylabel('Frequency')
+    ax6.set_title('Final Performance Distribution')
+    ax6.legend()
+    ax6.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    plt.savefig('gridworld_results.png', dpi=150, bbox_inches='tight')
+    plt.show()
+
+if __name__ == "__main__":
+    # Configure experiment
+    config = GridWorldConfig(
+        env_name='CartPole-v1',
+        n_episodes=1000,
+        hidden_dim=64,
+        trajectory_encoding_dim=32,
+        batch_size=16,
+        start_planning_episode=200,
+        planning_horizon=10,
+        n_trajectory_samples=5
+    )
+    
+    print("="*50)
+    print("SELF-GRADIENT WORLD MODELS - GRID WORLD")
+    print("="*50)
+    print(f"\nConfiguration:")
+    for key, value in config.__dict__.items():
+        print(f"  {key}: {value}")
+    print()
+    
+    # Run experiment
+    metrics = run_gridworld_experiment(config)
+    
+    # Visualize results
+    visualize_gridworld_results(metrics)
+    
+    # Save metrics
+    with open('gridworld_metrics.json', 'w') as f:
+        # Convert to JSON-serializable format
+        json_metrics = {
+            'episode_rewards': metrics['episode_rewards'],
+            'episode_lengths': metrics['episode_lengths'],
+            'gradient_errors': metrics['gradient_errors'],
+            'meta_values': metrics['meta_values']
+        }
+        json.dump(json_metrics, f, indent=2)
+    
+    print("\nResults saved to gridworld_results.png and gridworld_metrics.json")
+```
+
+## Integration Guide (Week 4)
+
+### Bridging the Two Projects
+
+Once both experiments are working independently:
+
+1. **Shared Gradient Model Architecture**: Extract the gradient prediction component as a standalone module both projects can use.
+
+2. **Unified Buffer System**: Create a shared experience buffer that stores (params, trajectory, gradient) triples.
+
+3. **Cross-Validation**: Use the gradient hacking detector from Project 2 to verify Project 1's agent isn't inadvertently hacking.
+
+4. **Ablation Studies**:
+   - Gradient predictor alone (no meta-value)
+   - Meta-value alone (no gradient predictor)
+   - Random gradient predictions (baseline)
+   - Different trajectory encoding methods
+
+### Key Engineering Considerations
+
+1. **CPU Optimization**:
+   - Use smaller batch sizes (16-32)
+   - Reduce hidden dimensions (64-128)
+   - Use GRU instead of LSTM
+   - Pre-allocate numpy arrays for buffers
+
+2. **Numerical Stability**:
+   - Always normalize gradients before prediction
+   - Use gradient clipping
+   - Add small regularization terms
+   - Initialize networks carefully
+
+3. **Debugging Tools**:
+   - Log gradient prediction accuracy continuously
+   - Visualize predicted vs actual gradient distributions
+   - Track parameter trajectory evolution
+   - Monitor for gradient explosion/vanishing
+
+4. **Experiment Management**:
+   - Use config dataclasses for all hyperparameters
+   - Save checkpoints regularly
+   - Track all metrics in structured format
+   - Create reproducible seeds
+
+This implementation should run efficiently on CPU and provide all the infrastructure needed for the self-gradient world models paper. The key innovation - predicting and planning with gradient dynamics - is fully captured in these experiments.
