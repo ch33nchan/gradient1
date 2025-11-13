@@ -67,6 +67,7 @@ class BanditTrainer:
             'planning_weight': [],
             'grad_error_ema': [],
             'meta_value_current': [],
+            'meta_value_correlation': [],
             'planning_scores': {f'arm_{i}': [] for i in range(agent.n_arms)},
             'planning_best_arm': [],
             'planning_chosen_arm': [],
@@ -125,6 +126,7 @@ class BanditTrainer:
             self.metrics['planning_weight'].append(planning_diag['planning_weight'])
             self.metrics['grad_error_ema'].append(planning_diag['grad_error_ema'])
             self.metrics['meta_value_current'].append(planning_diag['meta_value_current'])
+            self.metrics['meta_value_correlation'].append(planning_diag['meta_value_correlation'])
             for i in range(self.agent.n_arms):
                 self.metrics['planning_scores'][f'arm_{i}'].append(
                     planning_diag[f'planning_score_arm_{i}']
@@ -259,6 +261,7 @@ class BanditTrainer:
         df_data['planning_weight'] = self.metrics['planning_weight']
         df_data['grad_error_ema'] = self.metrics['grad_error_ema']
         df_data['meta_value_current'] = self.metrics['meta_value_current']
+        df_data['meta_value_correlation'] = self.metrics['meta_value_correlation']
 
         # Add planning scores per arm
         for arm_name, scores in self.metrics['planning_scores'].items():

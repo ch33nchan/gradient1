@@ -49,7 +49,12 @@ class SelfGradientBanditAgent:
         # Planning objective
         planning_objective: str = "reward",  # "reward", "update_norm", "reward_plus_update_norm"
         planning_beta_self_change: float = 0.0,
-        gradient_step_scale: float = 1.0
+        gradient_step_scale: float = 1.0,
+        # Meta-value training improvements
+        meta_value_use_global_norm: bool = True,
+        meta_value_disable_entropy: bool = True,
+        meta_value_use_ema_rewards: bool = True,
+        meta_value_ema_alpha: float = 0.1
     ):
         """
         Initialize self-gradient agent with gated planning.
@@ -93,6 +98,12 @@ class SelfGradientBanditAgent:
         self.planning_beta_self_change = planning_beta_self_change
         self.gradient_step_scale = gradient_step_scale
 
+        # Meta-value training configuration
+        self.meta_value_use_global_norm = meta_value_use_global_norm
+        self.meta_value_disable_entropy = meta_value_disable_entropy
+        self.meta_value_use_ema_rewards = meta_value_use_ema_rewards
+        self.meta_value_ema_alpha = meta_value_ema_alpha
+
         self.logger = logging.getLogger('self_gradient_agent')
 
         # Policy (softmax bandit)
@@ -124,6 +135,22 @@ class SelfGradientBanditAgent:
         self.episode_count = 0
         self.gradient_errors = []
         self.meta_value_losses = []
+
+        # Meta-value quality tracking
+        # Store recent (theta, reward) pairs for correlation analysis
+        self.meta_value_window_size = 200
+        self.recent_thetas = []
+        self.recent_rewards = []
+        self.meta_value_correlations = []  # Correlation over time
+
+        # Running statistics for global normalization
+        self.reward_running_mean = 0.0
+        self.reward_running_var = 1.0
+        self.reward_count = 0
+
+        # EMA-smoothed reward tracker
+        self.reward_ema = 0.0
+        self.reward_ema_initialized = False
 
         # Planning tracking
         self.grad_error_ema = 1.0  # Start high
@@ -321,6 +348,30 @@ class SelfGradientBanditAgent:
         # Get current parameters
         current_theta = self.policy.get_parameters()
 
+        # Track theta and reward for meta-value correlation analysis
+        self.recent_thetas.append(current_theta.detach().clone())
+        self.recent_rewards.append(reward)
+        if len(self.recent_thetas) > self.meta_value_window_size:
+            self.recent_thetas.pop(0)
+            self.recent_rewards.pop(0)
+
+        # Update running statistics for global normalization
+        self.reward_count += 1
+        delta = reward - self.reward_running_mean
+        self.reward_running_mean += delta / self.reward_count
+        delta2 = reward - self.reward_running_mean
+        self.reward_running_var += delta * delta2
+
+        # Update EMA-smoothed reward
+        if not self.reward_ema_initialized:
+            self.reward_ema = reward
+            self.reward_ema_initialized = True
+        else:
+            self.reward_ema = (
+                self.meta_value_ema_alpha * reward +
+                (1 - self.meta_value_ema_alpha) * self.reward_ema
+            )
+
         # Compute actual gradient using REINFORCE
         actual_gradient = self.policy.compute_gradient(action, reward)
 
@@ -345,6 +396,11 @@ class SelfGradientBanditAgent:
                 self.grad_error_ema_alpha * grad_error +
                 (1 - self.grad_error_ema_alpha) * self.grad_error_ema
             )
+
+            # Compute meta-value correlation periodically (every 50 episodes)
+            if self.episode_count % 50 == 0 and len(self.recent_thetas) >= 50:
+                correlation = self._compute_meta_value_correlation()
+                self.meta_value_correlations.append(correlation)
 
         self.episode_count += 1
 
@@ -383,13 +439,22 @@ class SelfGradientBanditAgent:
         theta_batch, _, _, reward_batch = self.buffer.sample(self.batch_size)
 
         with torch.no_grad():
-            target_values = (reward_batch - reward_batch.mean()) / (
-                reward_batch.std() + 1e-8
-            )
+            # Normalize targets
+            if self.meta_value_use_global_norm and self.reward_count > 10:
+                # Use global running statistics
+                reward_std = np.sqrt(self.reward_running_var / max(self.reward_count - 1, 1))
+                target_values = (reward_batch - self.reward_running_mean) / (reward_std + 1e-8)
+            else:
+                # Use batch statistics (original implementation)
+                target_values = (reward_batch - reward_batch.mean()) / (
+                    reward_batch.std() + 1e-8
+                )
 
-            policies = F.softmax(theta_batch, dim=1)
-            entropies = -(policies * (policies + 1e-8).log()).sum(dim=1)
-            target_values = target_values - 0.3 * entropies
+            # Optionally apply entropy penalty
+            if not self.meta_value_disable_entropy:
+                policies = F.softmax(theta_batch, dim=1)
+                entropies = -(policies * (policies + 1e-8).log()).sum(dim=1)
+                target_values = target_values - 0.3 * entropies
 
         predicted_values = self.meta_value(theta_batch).squeeze()
         loss = F.mse_loss(predicted_values, target_values)
@@ -404,6 +469,43 @@ class SelfGradientBanditAgent:
 
         self.meta_value_losses.append(loss.item())
         return loss.item()
+
+    def _compute_meta_value_correlation(self) -> float:
+        """
+        Compute correlation between V(θ) predictions and actual rewards
+        over the recent window of episodes.
+
+        Returns:
+            Pearson correlation coefficient
+        """
+        if len(self.recent_thetas) < 10:
+            return 0.0
+
+        self.meta_value.eval()
+        with torch.no_grad():
+            # Stack thetas into batch
+            theta_batch = torch.stack(self.recent_thetas)
+            # Get meta-value predictions
+            predicted_values = self.meta_value(theta_batch).squeeze().numpy()
+            # Get actual rewards
+            actual_rewards = np.array(self.recent_rewards)
+
+            # Compute correlation
+            if len(predicted_values) != len(actual_rewards):
+                # Handle squeeze issues
+                predicted_values = predicted_values.flatten()
+
+            if len(predicted_values) == len(actual_rewards) and len(predicted_values) > 1:
+                # Check for zero variance
+                if np.std(predicted_values) > 1e-8 and np.std(actual_rewards) > 1e-8:
+                    correlation = np.corrcoef(predicted_values, actual_rewards)[0, 1]
+                else:
+                    correlation = 0.0
+            else:
+                correlation = 0.0
+
+        self.meta_value.train()
+        return correlation
 
     def get_policy_probs(self) -> np.ndarray:
         """Get current policy probabilities."""
@@ -433,6 +535,12 @@ class SelfGradientBanditAgent:
             current_meta_value = self.meta_value(current_theta).item()
             self.meta_value.train()
             diagnostics['meta_value_current'] = current_meta_value
+
+        # Add latest meta-value correlation
+        if self.meta_value_correlations:
+            diagnostics['meta_value_correlation'] = self.meta_value_correlations[-1]
+        else:
+            diagnostics['meta_value_correlation'] = 0.0
 
         # Add planning scores for each arm
         for i in range(self.n_arms):
