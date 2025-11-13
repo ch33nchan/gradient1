@@ -169,26 +169,24 @@ class SelfGradientBanditAgent:
 
     def _predict_future_reward(self, future_theta: torch.Tensor) -> float:
         """
-        Predict expected reward under future parameters.
+        Predict expected reward under future parameters using meta-value network.
 
-        For bandits: Expected reward if we act greedily under future_theta.
-        This is the softmax-weighted average of arm parameters.
+        The meta-value network V(θ) is trained on actual returns, so it provides
+        a better estimate of parameter quality than raw logits. This replaces the
+        previous broken approach of treating logits as rewards.
 
         Args:
             future_theta: Predicted future parameters
 
         Returns:
-            Expected reward estimate
+            Predicted value (quality) of future parameters
         """
         with torch.no_grad():
-            # Future policy distribution
-            future_policy = F.softmax(future_theta, dim=-1)
+            # Use meta-value network to predict parameter quality
+            # This network is trained on actual returns, not logits
+            predicted_value = self.meta_value(future_theta).item()
 
-            # Expected parameter value under future policy
-            # This is a proxy for expected reward
-            expected_value = (future_policy * future_theta).sum().item()
-
-            return expected_value
+            return predicted_value
 
     def _compute_planning_scores(self) -> np.ndarray:
         """
@@ -427,6 +425,14 @@ class SelfGradientBanditAgent:
             'planning_weight': self.current_planning_weight,
             'grad_error_ema': self.grad_error_ema,
         }
+
+        # Add meta-value of current parameters
+        with torch.no_grad():
+            current_theta = self.policy.get_parameters()
+            self.meta_value.eval()
+            current_meta_value = self.meta_value(current_theta).item()
+            self.meta_value.train()
+            diagnostics['meta_value_current'] = current_meta_value
 
         # Add planning scores for each arm
         for i in range(self.n_arms):

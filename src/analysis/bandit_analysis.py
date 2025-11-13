@@ -181,6 +181,123 @@ def plot_planning_diagnostics(df: pd.DataFrame, save_path: Optional[Path] = None
     plt.close()
 
 
+def plot_meta_value_diagnostics(df: pd.DataFrame, save_path: Optional[Path] = None):
+    """
+    Plot meta-value network diagnostics.
+
+    This helps answer: Does V_meta predict which parameter updates are good?
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    # 1. Meta-value trajectory over time
+    if 'meta_value_current' in df.columns:
+        window = 100
+        rolling = df['meta_value_current'].rolling(window=window, min_periods=1).mean()
+        axes[0, 0].plot(df['episode'], rolling, linewidth=2, color='purple')
+        axes[0, 0].set_xlabel('Episode')
+        axes[0, 0].set_ylabel(f'Meta-value V(θ) (rolling {window})')
+        axes[0, 0].set_title('Meta-Value Over Time')
+        axes[0, 0].grid(True, alpha=0.3)
+
+    # 2. Meta-value vs actual reward correlation
+    if 'meta_value_current' in df.columns and 'our_reward' in df.columns:
+        # Use planning episodes only
+        planning_mask = df['planning_enabled'] > 0.5
+        if planning_mask.sum() > 0:
+            meta_vals = df.loc[planning_mask, 'meta_value_current'].values
+            rewards = df.loc[planning_mask, 'our_reward'].values
+
+            # Scatter plot
+            axes[0, 1].scatter(meta_vals, rewards, alpha=0.3, s=10)
+
+            # Add trend line if enough data
+            if len(meta_vals) > 10:
+                z = np.polyfit(meta_vals, rewards, 1)
+                p = np.poly1d(z)
+                x_line = np.linspace(meta_vals.min(), meta_vals.max(), 100)
+                axes[0, 1].plot(x_line, p(x_line), "r--", linewidth=2,
+                              label=f'Trend: y={z[0]:.2f}x+{z[1]:.2f}')
+
+                # Compute correlation
+                corr = np.corrcoef(meta_vals, rewards)[0, 1]
+                axes[0, 1].text(0.05, 0.95, f'Corr: {corr:.3f}',
+                               transform=axes[0, 1].transAxes,
+                               verticalalignment='top',
+                               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+            axes[0, 1].set_xlabel('Meta-value V(θ)')
+            axes[0, 1].set_ylabel('Actual Reward')
+            axes[0, 1].set_title('Meta-Value vs Actual Reward (Planning Episodes)')
+            axes[0, 1].grid(True, alpha=0.3)
+            axes[0, 1].legend()
+
+    # 3. Planning score (best) vs subsequent reward
+    if 'planning_score_best' in df.columns and 'our_reward' in df.columns:
+        planning_mask = df['planning_enabled'] > 0.5
+        if planning_mask.sum() > 0:
+            scores = df.loc[planning_mask, 'planning_score_best'].values
+            rewards = df.loc[planning_mask, 'our_reward'].values
+
+            axes[1, 0].scatter(scores, rewards, alpha=0.3, s=10, color='green')
+
+            if len(scores) > 10:
+                z = np.polyfit(scores, rewards, 1)
+                p = np.poly1d(z)
+                x_line = np.linspace(scores.min(), scores.max(), 100)
+                axes[1, 0].plot(x_line, p(x_line), "r--", linewidth=2)
+
+                corr = np.corrcoef(scores, rewards)[0, 1]
+                axes[1, 0].text(0.05, 0.95, f'Corr: {corr:.3f}',
+                               transform=axes[1, 0].transAxes,
+                               verticalalignment='top',
+                               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+            axes[1, 0].set_xlabel('Best Planning Score (V_meta(θ_best))')
+            axes[1, 0].set_ylabel('Actual Reward')
+            axes[1, 0].set_title('Best Planning Score vs Actual Reward')
+            axes[1, 0].grid(True, alpha=0.3)
+
+    # 4. Calibration: binned meta-value vs average reward
+    if 'meta_value_current' in df.columns and 'our_reward' in df.columns:
+        planning_mask = df['planning_enabled'] > 0.5
+        if planning_mask.sum() > 20:  # Need enough data for binning
+            meta_vals = df.loc[planning_mask, 'meta_value_current'].values
+            rewards = df.loc[planning_mask, 'our_reward'].values
+
+            # Bin meta-values into quintiles
+            n_bins = 5
+            bins = np.percentile(meta_vals, np.linspace(0, 100, n_bins + 1))
+            bin_indices = np.digitize(meta_vals, bins[1:-1])
+
+            bin_means_meta = []
+            bin_means_reward = []
+            bin_stds_reward = []
+
+            for i in range(n_bins):
+                mask = bin_indices == i
+                if mask.sum() > 0:
+                    bin_means_meta.append(meta_vals[mask].mean())
+                    bin_means_reward.append(rewards[mask].mean())
+                    bin_stds_reward.append(rewards[mask].std())
+
+            axes[1, 1].errorbar(bin_means_meta, bin_means_reward,
+                              yerr=bin_stds_reward, fmt='o-', linewidth=2,
+                              capsize=5, capthick=2, markersize=8)
+            axes[1, 1].set_xlabel('Meta-value (binned)')
+            axes[1, 1].set_ylabel('Average Reward in Bin')
+            axes[1, 1].set_title('Meta-Value Calibration')
+            axes[1, 1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    else:
+        plt.show()
+
+    plt.close()
+
+
 def plot_all(run_dir: Path):
     """Generate all plots for a run."""
     df = load_metrics(run_dir)
@@ -200,6 +317,10 @@ def plot_all(run_dir: Path):
     if 'planning_weight' in df.columns:
         plot_planning_diagnostics(df, run_dir / 'planning_diagnostics.png')
         print(f"  Saved planning_diagnostics.png")
+
+    if 'meta_value_current' in df.columns:
+        plot_meta_value_diagnostics(df, run_dir / 'meta_value_diagnostics.png')
+        print(f"  Saved meta_value_diagnostics.png")
 
 
 def print_summary(run_dir: Path):
@@ -264,3 +385,24 @@ def print_summary(run_dir: Path):
             if len(planning_df) > 0:
                 avg_gap = planning_df['planning_score_gap'].mean()
                 print(f"  Average score gap (best - chosen): {avg_gap:.4f}")
+
+    # Meta-value statistics
+    if 'meta_value_current' in df.columns:
+        print(f"\nMeta-Value Statistics:")
+        final_meta_value = df['meta_value_current'].iloc[-window:].mean()
+        print(f"  Final {window} episodes V(θ): {final_meta_value:.4f}")
+
+        # Correlation with rewards during planning episodes
+        if 'our_reward' in df.columns and 'planning_enabled' in df.columns:
+            planning_mask = df['planning_enabled'] > 0.5
+            if planning_mask.sum() > 10:
+                meta_vals = df.loc[planning_mask, 'meta_value_current'].values
+                rewards = df.loc[planning_mask, 'our_reward'].values
+                corr = np.corrcoef(meta_vals, rewards)[0, 1]
+                print(f"  Correlation V(θ) vs reward (planning episodes): {corr:.4f}")
+
+                # Also check correlation with best planning score
+                if 'planning_score_best' in df.columns:
+                    scores = df.loc[planning_mask, 'planning_score_best'].values
+                    score_reward_corr = np.corrcoef(scores, rewards)[0, 1]
+                    print(f"  Correlation V(θ') vs reward (planning episodes): {score_reward_corr:.4f}")
