@@ -100,7 +100,10 @@ def create_agent(config: dict) -> SelfGradientBanditAgent:
         buffer_size=agent_config['buffer_size'],
         batch_size=agent_config['batch_size'],
         exploration_episodes=agent_config['exploration_episodes'],
-        hidden_dim=agent_config['hidden_dim']
+        hidden_dim=agent_config['hidden_dim'],
+        enable_planning=agent_config.get('enable_planning', True),
+        planning_exploration_bonus=agent_config.get('planning_exploration_bonus', 0.0),
+        gradient_step_scale=agent_config.get('gradient_step_scale', 1.0)
     )
 
     return agent

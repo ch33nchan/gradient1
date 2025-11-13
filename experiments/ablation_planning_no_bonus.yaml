@@ -1,31 +1,32 @@
-# Quick Test Configuration for Development
-# Smaller parameters for fast iteration during development
+# Ablation 2: Planning Without Exploration Bonus
+# Use gradient-based planning but no exploration bonus
+# Pure meta-value optimization
 
 experiment:
-  name: "bandit_quick_test"
+  name: "ablation_planning_no_bonus"
   type: "bandit"
-  description: "Quick test with reduced parameters"
+  description: "Self-gradient agent WITH planning but NO exploration bonus"
 
 environment:
   n_arms: 5
   non_stationary: false
   drift_rate: 0.1
-  seed: 123
+  seed: 42
 
 agent:
   type: "self_gradient"
   learning_rate: 0.01
   meta_learning_rate: 0.001
   gradient_clip: 1.0
-  buffer_size: 500
+  buffer_size: 1000
   batch_size: 16
   exploration_episodes: 50
   hidden_dim: 32
 
-  # Planning parameters
-  enable_planning: true
-  planning_exploration_bonus: 0.0  # No exploration bonus
-  gradient_step_scale: 1.0
+  # Ablation parameters
+  enable_planning: true  # USE gradient-based planning
+  planning_exploration_bonus: 0.0  # NO exploration bonus
+  gradient_step_scale: 1.0  # Look ahead 1 full step
 
 baselines:
   - name: "epsilon_greedy"
