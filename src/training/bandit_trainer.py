@@ -61,7 +61,15 @@ class BanditTrainer:
             'baseline_regrets': {name: [] for name in baselines.keys()},
             'gradient_errors': [],
             'meta_value_losses': [],
-            'policy_entropy': []
+            'policy_entropy': [],
+            # Planning diagnostics
+            'planning_enabled': [],
+            'planning_weight': [],
+            'grad_error_ema': [],
+            'planning_scores': {f'arm_{i}': [] for i in range(agent.n_arms)},
+            'planning_best_arm': [],
+            'planning_chosen_arm': [],
+            'planning_score_gap': []
         }
 
     def train(self, n_episodes: int) -> Dict:
@@ -109,6 +117,19 @@ class BanditTrainer:
             probs = self.agent.get_policy_probs()
             entropy = -np.sum(probs * np.log(probs + 1e-8))
             self.metrics['policy_entropy'].append(entropy)
+
+            # Store planning diagnostics
+            planning_diag = self.agent.get_planning_diagnostics()
+            self.metrics['planning_enabled'].append(planning_diag['planning_enabled'])
+            self.metrics['planning_weight'].append(planning_diag['planning_weight'])
+            self.metrics['grad_error_ema'].append(planning_diag['grad_error_ema'])
+            for i in range(self.agent.n_arms):
+                self.metrics['planning_scores'][f'arm_{i}'].append(
+                    planning_diag[f'planning_score_arm_{i}']
+                )
+            self.metrics['planning_best_arm'].append(planning_diag['planning_best_arm'])
+            self.metrics['planning_chosen_arm'].append(planning_diag['planning_chosen_arm'])
+            self.metrics['planning_score_gap'].append(planning_diag['planning_score_gap'])
 
             # Baseline agents
             for name, baseline in self.baselines.items():
@@ -230,6 +251,19 @@ class BanditTrainer:
             while len(grad_errors) < len(self.metrics['our_rewards']):
                 grad_errors.insert(0, np.nan)
             df_data['gradient_error'] = grad_errors
+
+        # Add planning diagnostics
+        df_data['planning_enabled'] = self.metrics['planning_enabled']
+        df_data['planning_weight'] = self.metrics['planning_weight']
+        df_data['grad_error_ema'] = self.metrics['grad_error_ema']
+
+        # Add planning scores per arm
+        for arm_name, scores in self.metrics['planning_scores'].items():
+            df_data[f'planning_score_{arm_name}'] = scores
+
+        df_data['planning_best_arm'] = self.metrics['planning_best_arm']
+        df_data['planning_chosen_arm'] = self.metrics['planning_chosen_arm']
+        df_data['planning_score_gap'] = self.metrics['planning_score_gap']
 
         df = pd.DataFrame(df_data)
         df.to_csv(path, index=False)

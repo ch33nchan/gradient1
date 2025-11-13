@@ -1,0 +1,52 @@
+# CONTROL: Gated Planning with Update Norm Objective (BROKEN)
+# This is the OLD BROKEN behavior - optimizes for gradient magnitude
+# Use as a control to show that reward-based planning is necessary
+
+experiment:
+  name: "planning_gated_update_norm_control"
+  type: "bandit"
+  description: "CONTROL - gated planning with update_norm objective (expect failure)"
+
+environment:
+  n_arms: 5
+  non_stationary: false
+  drift_rate: 0.1
+  seed: 42
+
+agent:
+  type: "self_gradient"
+  learning_rate: 0.01
+  meta_learning_rate: 0.001
+  gradient_clip: 1.0
+  buffer_size: 1000
+  batch_size: 16
+  exploration_episodes: 50
+  hidden_dim: 32
+
+  # Planning control - GATED (same as reward-based)
+  enable_planning: true
+  planning_warmup_episodes: 150
+  planning_grad_error_threshold: 0.25
+  planning_max_weight: 0.7
+  planning_ramp_episodes: 100
+
+  # Planning objective - UPDATE NORM ONLY (BROKEN)
+  planning_objective: "update_norm"  # Optimize for gradient magnitude (BAD)
+  planning_beta_self_change: 0.0  # Not used in this mode
+  gradient_step_scale: 1.0
+
+baselines:
+  - name: "epsilon_greedy"
+    epsilon: 0.1
+  - name: "ucb"
+    ucb_c: 2.0
+
+training:
+  n_episodes: 1000
+  log_interval: 50
+  save_interval: 200
+
+logging:
+  log_dir: "logs"
+  save_metrics: true
+  save_plots: true

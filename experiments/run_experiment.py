@@ -101,8 +101,15 @@ def create_agent(config: dict) -> SelfGradientBanditAgent:
         batch_size=agent_config['batch_size'],
         exploration_episodes=agent_config['exploration_episodes'],
         hidden_dim=agent_config['hidden_dim'],
+        # Planning control
         enable_planning=agent_config.get('enable_planning', True),
-        planning_exploration_bonus=agent_config.get('planning_exploration_bonus', 0.0),
+        planning_warmup_episodes=agent_config.get('planning_warmup_episodes', 100),
+        planning_grad_error_threshold=agent_config.get('planning_grad_error_threshold', 0.3),
+        planning_max_weight=agent_config.get('planning_max_weight', 1.0),
+        planning_ramp_episodes=agent_config.get('planning_ramp_episodes', 100),
+        # Planning objective
+        planning_objective=agent_config.get('planning_objective', 'reward'),
+        planning_beta_self_change=agent_config.get('planning_beta_self_change', 0.0),
         gradient_step_scale=agent_config.get('gradient_step_scale', 1.0)
     )
 
