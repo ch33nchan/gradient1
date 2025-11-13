@@ -1,0 +1,64 @@
+# Planning with Improved Meta-Value Training
+#
+# Tests whether improved meta-value training (correlation 0.12-0.31) is sufficient
+# for planning to provide benefits.
+#
+# Improvements over baseline planning:
+# 1. Global normalization (running statistics) instead of batch normalization
+# 2. No entropy penalty (removes mixed signals)
+# 3. Planning ENABLED with meta-value-based objective
+#
+# Key question: Does V(θ) correlation 0.12-0.31 enable useful planning?
+
+experiment:
+  name: "planning_meta_value_improved"
+  type: "bandit"
+  description: "Test planning with improved meta-value training"
+
+environment:
+  n_arms: 5
+  non_stationary: false
+  drift_rate: 0.1
+  seed: 42
+
+agent:
+  type: "self_gradient"
+  learning_rate: 0.01
+  meta_learning_rate: 0.001
+  gradient_clip: 1.0
+  buffer_size: 1000
+  batch_size: 16
+  exploration_episodes: 50
+  hidden_dim: 32
+
+  # Planning ENABLED with improved meta-value
+  enable_planning: true
+  planning_warmup_episodes: 100
+  planning_grad_error_threshold: 0.3
+  planning_max_weight: 1.0
+  planning_ramp_episodes: 100
+  planning_objective: "reward"  # Use meta-value V(θ)
+  planning_beta_self_change: 0.0
+  gradient_step_scale: 1.0
+
+  # Meta-value training improvements
+  meta_value_use_global_norm: true     # Use running statistics
+  meta_value_disable_entropy: true     # Remove entropy penalty
+  meta_value_use_ema_rewards: false    # Not implemented yet
+  meta_value_ema_alpha: 0.1
+
+baselines:
+  - name: "epsilon_greedy"
+    epsilon: 0.1
+  - name: "ucb"
+    ucb_c: 2.0
+
+training:
+  n_episodes: 1000
+  log_interval: 50
+  save_interval: 200
+
+logging:
+  log_dir: "logs"
+  save_metrics: true
+  save_plots: true
