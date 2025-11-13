@@ -46,20 +46,52 @@ gradient1/
 
 ### Installation
 
-1. Clone the repository:
+#### Option 1: Automatic Setup (Recommended)
+
+Use the provided setup script:
+
 ```bash
 cd /path/to/gradient1
+./setup.sh
 ```
 
-2. Create and activate virtual environment:
+This script will:
+- Create a virtual environment
+- Install PyTorch (CPU-only)
+- Install all dependencies
+
+Then activate the environment:
 ```bash
+source .venv/bin/activate
+```
+
+#### Option 2: Manual Setup
+
+1. Create and activate virtual environment:
+```bash
+cd /path/to/gradient1
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-3. Install dependencies:
+2. Upgrade pip:
 ```bash
 pip install --upgrade pip
+```
+
+3. Install PyTorch (CPU-only):
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+4. Install other dependencies:
+```bash
+pip install numpy matplotlib pandas tqdm pyyaml pytest pytest-cov gym python-dotenv
+```
+
+Alternatively, you can use requirements.txt (but install PyTorch separately first):
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 ```
 

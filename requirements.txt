@@ -1,18 +1,18 @@
 # Core dependencies
-# PyTorch CPU-only build
-torch==2.1.2+cpu --extra-index-url https://download.pytorch.org/whl/cpu
-numpy==1.24.3
-matplotlib==3.8.2
-pandas==2.1.4
-tqdm==4.66.1
-pyyaml==6.0.1
+# PyTorch CPU-only build (install separately, see below)
+torch>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+pandas>=2.0.0
+tqdm>=4.65.0
+pyyaml>=6.0
 
 # Testing
-pytest==7.4.3
-pytest-cov==4.1.0
+pytest>=7.4.0
+pytest-cov>=4.1.0
 
 # Environment
-gym==0.26.2
+gym>=0.26.0
 
 # Utilities
-python-dotenv==1.0.0
+python-dotenv>=1.0.0
