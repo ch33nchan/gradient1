@@ -111,6 +111,10 @@ class SelfGradientBanditAgent:
 
         current_theta = self.policy.get_parameters()
 
+        # Set models to eval mode for inference
+        self.gradient_predictor.eval()
+        self.meta_value.eval()
+
         # Evaluate each possible action
         for action in range(self.n_arms):
             with torch.no_grad():
@@ -133,6 +137,10 @@ class SelfGradientBanditAgent:
             if total_value > best_value:
                 best_value = total_value
                 best_action = action
+
+        # Set models back to train mode
+        self.gradient_predictor.train()
+        self.meta_value.train()
 
         return best_action
 
