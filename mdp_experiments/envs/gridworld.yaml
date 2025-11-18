@@ -1,0 +1,105 @@
+# Gridworld Environment Specification
+#
+# 2D grid navigation with obstacles.
+# Tests spatial planning and obstacle avoidance.
+
+environment:
+  name: "gridworld"
+  type: "discrete"
+
+  # Grid dimensions
+  height: 8
+  width: 8
+  n_states: 64  # height * width
+
+  # Actions: 0=up, 1=down, 2=left, 3=right
+  n_actions: 4
+
+  # Layout
+  layout: |
+    S . . . . . . .
+    . # # # . . . .
+    . . . . . # # .
+    . # # . . . . .
+    . . . . # # . .
+    . # . . . . . .
+    . . . . . # # .
+    . . . . . . . G
+
+  # Legend: S=start, G=goal, #=wall, .=empty
+
+  # Positions (row, col)
+  start_position: [0, 0]
+  goal_position: [7, 7]
+
+  walls:
+    - [1, 1]
+    - [1, 2]
+    - [1, 3]
+    - [2, 5]
+    - [2, 6]
+    - [3, 1]
+    - [3, 2]
+    - [4, 4]
+    - [4, 5]
+    - [5, 1]
+    - [6, 5]
+    - [6, 6]
+
+  # Reward structure
+  rewards:
+    step: -0.01      # Small penalty for each step
+    goal: 1.0        # Large reward at goal
+    wall: 0.0        # Trying to move into wall (no-op)
+    out_of_bounds: 0.0
+
+  # Dynamics
+  transition_prob: 1.0 # Deterministic
+  slip_prob: 0.0       # No stochasticity
+
+  # Episode parameters
+  max_steps: 200
+  discount_factor: 0.99
+
+# Optimal path
+optimal:
+  policy: "shortest_path"
+  path_length: 14      # Manhattan distance with obstacles
+  expected_return: 0.86  # 1.0 - 14*0.01 discounted
+
+# Baselines
+baselines:
+  random:
+    description: "Random walk"
+    expected_steps: ~100
+    expected_return: ~0.0
+
+  manhattan:
+    description: "Move toward goal (ignoring walls)"
+    expected_steps: ~20
+    expected_return: ~0.6
+
+  optimal:
+    description: "Shortest path avoiding walls"
+    expected_steps: 14
+    expected_return: 0.86
+
+# Why this environment?
+rationale: |
+  Gridworld tests:
+  - Spatial reasoning
+  - Multiple paths with different qualities
+  - Obstacle avoidance
+  - Trade-off between path length and reward
+
+  Good for meta-value:
+  - Policies with different parameters lead to different paths
+  - Clear metric: path length to goal
+  - Meta-value should prefer parameters that find shorter paths
+
+# Expected difficulty
+difficulty:
+  state_space: "Small (64 states)"
+  action_space: "Small (4 actions)"
+  credit_assignment: "Moderate (14 steps optimal)"
+  optimal_policy: "Non-trivial (path planning)"

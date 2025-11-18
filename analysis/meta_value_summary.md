@@ -78,3 +78,15 @@ This is worse than random exploration because:
 - Statistics CSV: `analysis/meta_value_vs_planning_overview.csv`
 - No planning run: `logs/meta_value_improved/run_2025-11-13_20-28-09/`
 - Planning run: `logs/planning_meta_value_improved/run_2025-11-13_21-02-08/`
+
+
+## Meta-Value Quality Threshold (Noise Ablation)
+
+Synthetic noise ablation study identified the empirical correlation threshold:
+
+- **Threshold: ≈0.00**
+- Below this correlation, planning performs worse than random selection
+- Current online training achieves 0.018-0.070 correlation
+- This is **0x below** the minimum required quality
+
+Conclusion: Meta-value correlation must be > 0.00 for planning to help.

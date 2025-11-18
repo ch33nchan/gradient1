@@ -1,0 +1,72 @@
+# Chain MDP Environment Specification
+#
+# Linear chain of states with goal at the end.
+# Simplest MDP for testing meta-value learning.
+
+environment:
+  name: "chain_mdp"
+  type: "discrete"
+
+  # Chain length
+  n_states: 10
+
+  # Actions: 0=left, 1=right
+  n_actions: 2
+
+  # Initial state (leftmost)
+  initial_state: 0
+
+  # Goal state (rightmost)
+  goal_state: 9
+
+  # Reward structure
+  rewards:
+    step: 0.0          # Reward for each step
+    goal: 1.0          # Reward for reaching goal
+    out_of_bounds: 0.0 # Reward for trying to move out of bounds
+
+  # Dynamics
+  transition_prob: 1.0 # Deterministic transitions
+  slip_prob: 0.0       # Probability of moving in wrong direction
+
+  # Episode parameters
+  max_steps: 100       # Maximum steps per episode
+  discount_factor: 0.99
+
+# Optimal policy
+optimal:
+  policy: "always_right"
+  expected_return: 0.91  # 0.99^9 * 1.0 ≈ 0.91
+  steps_to_goal: 9
+
+# Baselines
+baselines:
+  random:
+    description: "Random action selection"
+    expected_return: ~0.45
+    expected_steps: ~50
+
+  optimal:
+    description: "Always go right"
+    expected_return: 0.91
+    expected_steps: 9
+
+# Why this environment?
+rationale: |
+  Chain MDP is the simplest non-trivial MDP:
+  - Clear optimal policy (always right)
+  - Multi-step credit assignment (9 steps to reward)
+  - No spatial complexity (1D)
+  - Easy to analyze and debug
+
+  Good for testing:
+  - Does meta-value V(θ) correlate with return?
+  - Can agent learn optimal policy?
+  - Does planning help over random exploration?
+
+# Expected difficulty
+difficulty:
+  state_space: "Tiny (10 states)"
+  action_space: "Binary (2 actions)"
+  credit_assignment: "Moderate (9 steps)"
+  optimal_policy: "Trivial (constant action)"

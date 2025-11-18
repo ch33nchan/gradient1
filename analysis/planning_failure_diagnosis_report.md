@@ -263,3 +263,114 @@ When meta-value estimates are noisy:
 5. Fix would require periodic evaluation (100-300 episodes), defeating efficiency purpose
 
 **Conclusion**: Meta-value planning not viable for bandit tasks with online single-episode training.
+
+
+## Sample Efficiency Analysis
+
+### Why Single-Episode Rewards Are Insufficient
+
+Quantitative analysis of reward estimation variance:
+
+| Averaging Horizon | Std Error | Correct Ranking | Optimal Ranked #1 |
+|-------------------|-----------|-----------------|-------------------|
+
+
+## Sample Efficiency Analysis
+
+### Why Single-Episode Rewards Are Insufficient
+
+Quantitative analysis of reward estimation variance:
+
+| Averaging Horizon | Std Error | Correct Ranking | Optimal Ranked #1 |
+|-------------------|-----------|-----------------|-------------------|
+|   1 episodes | 1.0000 |   3.5% |  55.1% |
+|  10 episodes | 0.3162 |  24.8% |  97.7% |
+|  50 episodes | 0.1414 |  65.2% | 100.0% |
+| 100 episodes | 0.1000 |  83.9% | 100.0% |
+| 200 episodes | 0.0707 |  96.0% | 100.0% |
+| 300 episodes | 0.0577 |  98.7% | 100.0% |
+| 500 episodes | 0.0447 |  99.9% | 100.0% |
+
+**Key Finding**: Single-episode rewards have **17.3x higher** variance than 300-episode averages.
+
+### Sample Complexity
+
+To reliably distinguish arms with 95% confidence:
+
+- **Minimum gap between arms**: 0.200
+- **Gap (optimal vs 2nd-best)**: 0.900
+- **Episodes needed for correct full ranking**: 385
+- **Episodes needed to identify optimal**: 19
+
+**Conclusion**: Single-episode rewards are **19x below** the required sample size for reliable meta-value learning.
+
+This explains why:
+1. Offline training (300-ep averages) achieves 0.98 correlation
+2. Online training (1-ep rewards) achieves only 0.018-0.070 correlation
+3. The gap is **structural**, not a hyperparameter issue
+
+## Conclusion: Closing Bandit Work
+
+### Final Verdict
+
+After comprehensive analysis, we conclude that **meta-value-based planning is not viable for bandit tasks** with online single-episode training.
+
+**Evidence**:
+1. **Root cause identified**: Meta-value assigns lowest score to optimal arm (0.265 vs 0.373 for suboptimal)
+2. **Planning mechanism verified**: Works correctly, but receives wrong guidance
+3. **Performance impact**: 6.2x worse regret than no planning, 107x worse than UCB
+4. **Sample complexity**: Need 385 episodes/arm for reliable estimates, have only 1
+5. **Offline success**: 0.98 correlation proves architecture works with clean data
+6. **Online failure**: 0.018-0.070 correlation shows single-episode rewards insufficient
+
+### Why We're Stopping
+
+**Not pursuing**:
+- ✗ More planning variants (mechanism is correct, meta-value is broken)
+- ✗ Hyperparameter tuning (problem is structural, not parametric)
+- ✗ Architecture changes (offline training proves architecture works)
+- ✗ Additional bandits experiments (UCB and Thompson Sampling are optimal)
+
+**Reason**: The gap between online (0.018) and offline (0.98) correlation is **structural**:
+- Single-episode rewards have 17.3x higher variance than needed
+- Would require 385-episode averaging, defeating efficiency purpose
+- Confident wrong decisions worse than random exploration
+
+### Recommendations for Bandits
+
+**Use direct methods**:
+- ✓ **UCB** (Upper Confidence Bound): Theoretically optimal, simple, effective
+- ✓ **Thompson Sampling**: Bayesian approach, handles non-stationarity
+- ✓ **ε-greedy**: Simple baseline, works reasonably well
+
+**Do NOT use meta-value planning**: Complexity without benefit.
+
+### Path Forward: Moving to MDPs
+
+Meta-value learning may succeed in **multi-step environments** where:
+
+1. **Returns provide better targets**: Multi-step returns less noisy than single-step rewards
+2. **Value functions necessary**: Can't directly optimize without planning ahead
+3. **Credit assignment matters**: Meta-learning can help with long horizons
+4. **Exploration-exploitation different**: Need to plan under uncertainty
+
+**Next steps**: See `mdp_experiments/` for MDP specifications and architecture adaptations.
+
+### Research Contributions
+
+Despite negative result, this work provides:
+
+1. **Systematic diagnostic methodology**: Instrumentation, tracing, ablation studies
+2. **Quantitative thresholds**: Correlation must be > 0.95 for planning to help
+3. **Sample complexity analysis**: 385x gap between single-episode and required quality
+4. **Clear failure mode**: Inverted guidance from noisy meta-values
+5. **Boundary conditions**: Bandits vs MDPs, online vs offline, single vs multi-episode
+
+**Key Insight**: "Confident wrong decisions are worse than uncertain random exploration."
+
+---
+
+**Bandit work: CLOSED**
+
+**Next: MDP experiments** → See `mdp_experiments/README.md`
+

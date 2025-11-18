@@ -1,0 +1,119 @@
+# CartPole Environment Specification
+#
+# Classic control problem: balance pole on moving cart.
+# Standard RL benchmark with continuous state space.
+
+environment:
+  name: "cartpole"
+  type: "continuous_state"
+  source: "OpenAI Gym CartPole-v1"
+
+  # State space (continuous, 4D)
+  state_dim: 4
+  state_variables:
+    - cart_position: [-4.8, 4.8]       # meters
+    - cart_velocity: [-∞, ∞]           # m/s
+    - pole_angle: [-0.418, 0.418]      # radians (~24 degrees)
+    - pole_angular_velocity: [-∞, ∞]   # rad/s
+
+  # Action space (discrete, 2)
+  n_actions: 2
+  actions:
+    - 0: "Push left"
+    - 1: "Push right"
+
+  force_magnitude: 10.0  # Newtons
+
+  # Physical parameters
+  physics:
+    gravity: 9.8          # m/s²
+    cart_mass: 1.0        # kg
+    pole_mass: 0.1        # kg
+    pole_length: 0.5      # m (half-length)
+    time_step: 0.02       # s (50 Hz)
+
+  # Reward structure
+  rewards:
+    balanced: 1.0         # Reward per timestep while balanced
+    terminal: 0.0         # No reward when pole falls
+
+  # Termination conditions
+  done_conditions:
+    - pole_angle > 0.209 rad (12 degrees)
+    - cart_position > 2.4 meters
+    - episode_length >= 500
+
+  # Episode parameters
+  max_steps: 500
+  discount_factor: 0.99
+
+# Performance levels
+performance:
+  random:
+    description: "Random action selection"
+    expected_return: ~20
+    solved: False
+
+  decent:
+    description: "Somewhat stable"
+    expected_return: ~100
+    solved: False
+
+  solved:
+    description: "Stable for full episode"
+    expected_return: ~500 (max)
+    solved: True
+    criterion: "Average return >= 195 over 100 episodes"
+
+# Baselines
+baselines:
+  random:
+    expected_return: 20
+    typical_range: [10, 30]
+
+  dqn:
+    description: "Deep Q-Network"
+    expected_return: ~200
+    sample_complexity: ~10k episodes
+
+  ppo:
+    description: "Proximal Policy Optimization"
+    expected_return: ~400
+    sample_complexity: ~2k episodes
+
+# Why this environment?
+rationale: |
+  CartPole is ideal for RL research:
+  - Standard benchmark (widely used)
+  - Simple but non-trivial
+  - Continuous state space (tests generalization)
+  - Clear success criterion
+  - Fast to run
+
+  Good for meta-value:
+  - Policy quality varies smoothly with parameters
+  - Clear performance metric (episode length)
+  - Can compare to many baselines
+
+# Expected difficulty
+difficulty:
+  state_space: "Continuous (4D)"
+  action_space: "Binary (2 actions)"
+  credit_assignment: "Long-term (up to 500 steps)"
+  optimal_policy: "Moderate (balancing control)"
+  sample_efficiency: "Moderate (~1-10k episodes to solve)"
+
+# Meta-value considerations
+meta_value:
+  input_dim: "Policy network parameters (~hundreds)"
+  target: "Episode return (0 to 500)"
+  expected_variance: "Moderate (depends on policy)"
+  correlation_needed: ">0.7 for useful planning"
+
+# Implementation notes
+notes:
+  - Use neural network policy: π(a|s; θ) where θ are weights
+  - Meta-value V(θ) takes policy parameters as input
+  - Train on episode returns (not single-step rewards)
+  - May need normalization of returns (0-500 range)
+  - Consider curriculum learning (start with easier variant)
