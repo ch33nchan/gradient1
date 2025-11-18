@@ -8,7 +8,7 @@ then uses reward-based planning to select actions.
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 import logging
 
 from ..models.gradient_world_model import (
@@ -160,6 +160,9 @@ class SelfGradientBanditAgent:
         self.last_chosen_arm = 0
         self.planning_enabled_this_episode = False
 
+        # Planning trace for debugging (stores per-episode decisions)
+        self.planning_trace = []
+
     def act_exploratory(self) -> int:
         """Random action for initial exploration."""
         self.planning_enabled_this_episode = False
@@ -306,6 +309,9 @@ class SelfGradientBanditAgent:
         # Sample from blended distribution
         action = np.random.choice(self.n_arms, p=blended_probs)
         self.last_chosen_arm = action
+
+        # Record planning trace for debugging
+        self._record_planning_trace(action, greedy_probs, planning_probs, blended_probs)
 
         return action
 
@@ -514,6 +520,74 @@ class SelfGradientBanditAgent:
     def get_parameters(self) -> torch.Tensor:
         """Get current policy parameters."""
         return self.policy.get_parameters()
+
+    def _record_planning_trace(
+        self,
+        chosen_arm: int,
+        greedy_probs: np.ndarray,
+        planning_probs: np.ndarray,
+        blended_probs: np.ndarray
+    ):
+        """
+        Record planning decision trace for debugging.
+
+        Args:
+            chosen_arm: Arm that was chosen
+            greedy_probs: Greedy policy probabilities
+            planning_probs: Planning probabilities (from meta-value)
+            blended_probs: Final blended probabilities
+        """
+        trace_entry = {
+            'episode': self.episode_count,
+            'chosen_arm': chosen_arm,
+            'planning_weight': self.current_planning_weight,
+        }
+
+        # Record meta-value scores for each arm
+        for i in range(self.n_arms):
+            trace_entry[f'meta_value_arm_{i}'] = self.planning_scores[i]
+            trace_entry[f'greedy_prob_arm_{i}'] = greedy_probs[i]
+            trace_entry[f'planning_prob_arm_{i}'] = planning_probs[i]
+            trace_entry[f'blended_prob_arm_{i}'] = blended_probs[i]
+
+        # Record which arm has highest meta-value
+        best_meta_value_arm = int(np.argmax(self.planning_scores))
+        trace_entry['best_meta_value_arm'] = best_meta_value_arm
+        trace_entry['chose_best_meta_value'] = int(chosen_arm == best_meta_value_arm)
+
+        # Record chosen arm's meta-value vs best
+        trace_entry['chosen_meta_value'] = self.planning_scores[chosen_arm]
+        trace_entry['best_meta_value'] = self.planning_scores[best_meta_value_arm]
+        trace_entry['meta_value_gap'] = (
+            self.planning_scores[best_meta_value_arm] - self.planning_scores[chosen_arm]
+        )
+
+        self.planning_trace.append(trace_entry)
+
+    def get_planning_trace(self) -> List[Dict]:
+        """
+        Get the complete planning trace for analysis.
+
+        Returns:
+            List of planning trace entries
+        """
+        return self.planning_trace
+
+    def save_planning_trace(self, filepath: str):
+        """
+        Save planning trace to CSV.
+
+        Args:
+            filepath: Path to save CSV file
+        """
+        if not self.planning_trace:
+            print("No planning trace to save")
+            return
+
+        import pandas as pd
+        df = pd.DataFrame(self.planning_trace)
+        df.to_csv(filepath, index=False)
+        print(f"Saved planning trace: {filepath}")
 
     def get_planning_diagnostics(self) -> Dict[str, float]:
         """

@@ -182,6 +182,11 @@ def run_bandit_experiment(config: dict, exp_dir: Path):
         metrics_path = exp_dir / 'metrics.csv'
         trainer.save_metrics(metrics_path)
 
+        # Save planning trace if planning was enabled
+        if config['agent'].get('enable_planning', False):
+            planning_trace_path = exp_dir / 'planning_trace.csv'
+            agent.save_planning_trace(str(planning_trace_path))
+
     if config['logging'].get('save_plots', True):
         plot_path = exp_dir / 'results.png'
         trainer.plot_results(save_path=plot_path)
