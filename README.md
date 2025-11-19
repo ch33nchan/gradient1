@@ -267,6 +267,75 @@ Meta-value learning may succeed in **multi-step environments (MDPs)** where:
 
 See [`mdp_experiments/README.md`](mdp_experiments/README.md) for MDP project specifications.
 
+## MDP Baseline: Chain MDP (REINFORCE)
+
+**Status**: Baseline established and verified. All MDP experiments must meet or exceed this baseline.
+
+### Chain MDP Environment
+
+A simple linear chain of states for testing multi-step learning:
+- **States**: 10 (indexed 0-9)
+- **Actions**: 2 (0=left, 1=right)
+- **Start state**: 0 (leftmost)
+- **Goal state**: 9 (rightmost)
+- **Rewards**: 0.0 everywhere except 1.0 at goal
+- **Discount factor**: γ = 0.99
+- **Optimal policy**: Always go right
+- **Optimal return**: γ^8 ≈ 0.923 (reward received at timestep 8)
+
+### REINFORCE Baseline Agent
+
+Classic policy gradient algorithm (Williams, 1992):
+- Policy network: State embedding → hidden layer → action logits
+- Monte Carlo returns (no bootstrapping)
+- Baseline subtraction for variance reduction
+- Entropy bonus (0.01) for exploration
+- Learning rate: 0.01
+
+### Baseline Performance
+
+**Training (500 episodes):**
+- Mean return: **1.000** (maximum possible)
+- Episode length: **9.0 steps** (optimal)
+- Success rate: **100%**
+- Training time: ~1.3s (394.7 eps/s)
+
+**Evaluation (100 episodes, greedy policy):**
+- Mean return: **1.000 ± 0.000**
+- Episode length: **9.0 ± 0.0**
+- Success rate: **100%**
+
+The agent reliably learns the optimal policy (always go right) within 100 episodes.
+
+### Running the Baseline
+
+```bash
+python -m experiments.run_experiment --config experiments/chain_mdp_baseline.yaml
+```
+
+Results saved to: `logs/chain_mdp_baseline/run_YYYY-MM-DD_HH-MM-SS/`
+
+### Files
+
+- Config: [`experiments/chain_mdp_baseline.yaml`](experiments/chain_mdp_baseline.yaml)
+- Environment: [`src/envs/mdp_envs.py`](src/envs/mdp_envs.py) (ChainMDP class)
+- Agent: [`src/agents/reinforce_agent.py`](src/agents/reinforce_agent.py)
+- Trainer: [`src/training/mdp_trainer.py`](src/training/mdp_trainer.py)
+- Tests: [`tests/test_chain_mdp.py`](tests/test_chain_mdp.py)
+- Notes: [`mdp_experiments/CHAIN_MDP_NOTES.md`](mdp_experiments/CHAIN_MDP_NOTES.md)
+
+### Requirements for Future MDP Experiments
+
+Any meta-value or planning experiments on Chain MDP must:
+1. Match baseline performance (100% success, ~9 steps, return ~1.0)
+2. If planning helps, show clear improvement over baseline
+3. If planning hurts, diagnose why (as we did for bandits)
+
+This baseline ensures meta-value learning is tested in controlled conditions where:
+- Optimal policy is known and simple
+- Multi-step returns provide better signal than single rewards
+- Success is easily measured (reached goal or not)
+
 ## Experiment Guidelines
 
 Following strict research standards:
