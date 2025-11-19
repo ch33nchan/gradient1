@@ -587,6 +587,216 @@ This produces 100 samples (4 runs × 25 snapshots), sufficient for training meta
 - Agent architecture (hidden_dim) must match between training and dataset building
 - Environment config must be identical for training and evaluation
 
+### Training Meta-Value Model
+
+**Implementation**: [`src/analysis/train_offline_mdp_meta_value.py`](../src/analysis/train_offline_mdp_meta_value.py)
+
+**Command-line usage**:
+```bash
+python -m src.analysis.train_offline_mdp_meta_value \
+  --dataset-path analysis/mdp_meta_value_dataset.pt \
+  --output-dir analysis/meta_value_model \
+  --hidden-dims 256 128 64 \
+  --learning-rate 0.001 \
+  --epochs 200 \
+  --batch-size 32
+```
+
+**Arguments**:
+- `--dataset-path`: Path to .pt dataset file (required)
+- `--output-dir`: Output directory for model and metrics (required)
+- `--hidden-dims`: Hidden layer dimensions (default: 256 128 64)
+- `--learning-rate`: Learning rate (default: 0.001)
+- `--epochs`: Number of training epochs (default: 200)
+- `--batch-size`: Batch size (default: 32)
+- `--train-ratio`: Train/val split ratio (default: 0.7)
+- `--device`: Device (cpu or cuda, default: cpu)
+
+**Architecture**:
+```
+Input: policy_params + context features (param_norm, param_mean, etc.)
+Hidden: MLP with configurable layers [256, 128, 64]
+Output: Single scalar (predicted return)
+Loss: MSE
+Optimizer: Adam
+```
+
+**Temporal 70/30 split**:
+- Training: First 70% of snapshots (by episode number)
+- Validation: Last 30% of snapshots
+- Simulates real online use case (predict future performance)
+
+**Output files**:
+- `model.pt`: Trained model checkpoint
+- `metrics.json`: Final metrics (loss, correlation, etc.)
+- `training_history.csv`: Per-epoch metrics
+- `predictions.csv`: Predictions for all samples
+
+**Acceptance criteria**:
+- Validation Pearson correlation ≥ 0.95
+- RMSE < 10% of mean target return
+- No overfitting (train/val loss similar)
+
+### Evaluating Meta-Value Model
+
+**Implementation**: [`src/analysis/evaluate_mdp_meta_value.py`](../src/analysis/evaluate_mdp_meta_value.py)
+
+**Command-line usage**:
+```bash
+python -m src.analysis.evaluate_mdp_meta_value \
+  --dataset-path analysis/mdp_meta_value_dataset.pt \
+  --model-path analysis/meta_value_model/model.pt \
+  --output-dir analysis/meta_value_eval
+```
+
+**Arguments**:
+- `--dataset-path`: Path to dataset .pt file (required)
+- `--model-path`: Path to trained model .pt file (required)
+- `--output-dir`: Output directory for evaluation results (required)
+- `--split`: Which split to evaluate (train/val/all, default: val)
+
+**Computed metrics**:
+- **Correlation**: Pearson (linear) and Spearman (rank)
+- **Error**: MAE, RMSE, MSE, max absolute error
+- **R² score**: Explained variance
+- **Calibration**: Predicted vs true in buckets
+
+**Output files**:
+- `eval_metrics.json`: All metrics
+- `eval_report.md`: Human-readable report
+- `predictions_vs_true.png`: Scatter and residual plots
+- `calibration.png`: Calibration analysis
+- `calibration.csv`: Bucket statistics
+
+**Interpretation**:
+- **Pearson ≥ 0.95**: Excellent for quantitative prediction
+- **Pearson ≥ 0.80**: Good for ranking policies
+- **Spearman ≥ 0.90**: Excellent for policy selection
+
+### Planning Agent
+
+**Implementation**: [`src/agents/mdp_planning_agent.py`](../src/agents/mdp_planning_agent.py)
+
+The planning agent extends REINFORCE with meta-value-guided exploration.
+
+**Architecture**:
+```
+Base: REINFORCE agent (policy gradient)
+Meta-value: Loaded from trained model V(θ)
+Blended policy: π(a|s) = (1-w)π_base + wπ_plan
+
+where:
+  π_base = standard softmax policy
+  π_plan = planning-informed distribution
+  w = planning weight (0-1)
+```
+
+**Planning strategy**:
+1. Evaluate current policy quality: V(θ_current)
+2. For each action, estimate future policy quality
+3. Blend base policy with planning distribution
+4. Sample action from blended policy
+
+**Config**: [`experiments/chain_mdp_planning.yaml`](../experiments/chain_mdp_planning.yaml)
+
+**Running planning experiment**:
+```bash
+python -m experiments.run_experiment --config experiments/chain_mdp_planning.yaml
+```
+
+**Key parameters**:
+- `meta_value_model_path`: Path to trained meta-value model
+- `planning_weight`: Blend coefficient (default: 0.1)
+  - 0.0 = pure base REINFORCE
+  - 1.0 = pure planning
+  - 0.1 = 90% base + 10% planning (recommended)
+
+**Output**:
+- Standard training metrics (returns, success rates)
+- `planning_metrics.yaml`: Meta-value scores, entropies
+
+### Comparison: Baseline vs Planning
+
+**Implementation**: [`analysis/mdp_planning_comparison.py`](../analysis/mdp_planning_comparison.py)
+
+**Command-line usage**:
+```bash
+python -m analysis.mdp_planning_comparison \
+  --baseline-dir logs/chain_mdp_baseline/run_2025-11-19_06-18-51 \
+  --planning-dir logs/chain_mdp_planning/run_2025-11-19_12-34-56 \
+  --output-dir analysis/planning_comparison
+```
+
+**Arguments**:
+- `--baseline-dir`: Path to baseline training run (required)
+- `--planning-dir`: Path to planning training run (required)
+- `--output-dir`: Output directory (default: analysis/planning_comparison)
+- `--window`: Moving average window (default: 20)
+
+**Comparison metrics**:
+1. **Final performance** (last 20 episodes):
+   - Mean return improvement
+   - Success rate improvement
+   - Best return achieved
+
+2. **Learning speed**:
+   - Episodes to 80% success
+   - Sample efficiency comparison
+
+3. **Planning quality**:
+   - Meta-value score evolution
+   - Correlation with realized returns
+
+**Output files**:
+- `comparison.png`: Four-panel learning curves
+  - Returns over time
+  - Success rates over time
+  - Episode lengths
+  - Cumulative returns
+- `summary.md`: Markdown report with interpretation
+
+**Interpretation**:
+- **Positive**: Planning improves final return >5% OR accelerates learning
+- **Neutral**: Performance difference within ±5%
+- **Negative**: Planning hurts performance (requires diagnosis)
+
+### Complete Workflow Example
+
+From baseline to planning comparison:
+
+```bash
+# 1. Train baseline (with periodic checkpoints)
+python -m experiments.run_experiment --config experiments/chain_mdp_baseline.yaml
+
+# 2. Build meta-value dataset
+python -m src.analysis.build_mdp_meta_value_dataset \
+  --run-dir logs/chain_mdp_baseline/run_2025-11-19_06-18-51 \
+  --config experiments/chain_mdp_baseline.yaml \
+  --snapshot-interval 20 \
+  --n-eval-episodes 200 \
+  --output analysis/mdp_meta_value_dataset.pt
+
+# 3. Train meta-value model
+python -m src.analysis.train_offline_mdp_meta_value \
+  --dataset-path analysis/mdp_meta_value_dataset.pt \
+  --output-dir analysis/meta_value_model
+
+# 4. Evaluate meta-value model
+python -m src.analysis.evaluate_mdp_meta_value \
+  --dataset-path analysis/mdp_meta_value_dataset.pt \
+  --model-path analysis/meta_value_model/model.pt \
+  --output-dir analysis/meta_value_eval
+
+# 5. Train planning agent
+python -m experiments.run_experiment --config experiments/chain_mdp_planning.yaml
+
+# 6. Compare performance
+python -m analysis.mdp_planning_comparison \
+  --baseline-dir logs/chain_mdp_baseline/run_2025-11-19_06-18-51 \
+  --planning-dir logs/chain_mdp_planning/run_2025-11-19_12-34-56 \
+  --output-dir analysis/planning_comparison
+```
+
 ## Implementation Plan
 
 1. **Phase 1**: Chain MDP (simplest)

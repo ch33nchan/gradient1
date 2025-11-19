@@ -336,6 +336,140 @@ This baseline ensures meta-value learning is tested in controlled conditions whe
 - Multi-step returns provide better signal than single rewards
 - Success is easily measured (reached goal or not)
 
+## MDP Meta-Value Planning
+
+**Status**: Infrastructure complete. Ready for experimentation.
+
+### Overview
+
+Unlike bandits (where meta-value planning failed due to high single-episode variance), MDPs can use **multi-episode average returns** as meta-value targets. This reduces variance by ~17x, making meta-value learning tractable.
+
+### Architecture
+
+The MDP meta-value system consists of three components:
+
+#### 1. Dataset Builder
+
+Extract policy snapshots from training runs and evaluate with K_eval episodes:
+
+```bash
+python -m src.analysis.build_mdp_meta_value_dataset \
+    --run-dir logs/chain_mdp_baseline/run_2025-11-19_06-18-51 \
+    --config experiments/chain_mdp_baseline.yaml \
+    --snapshot-interval 20 \
+    --n-eval-episodes 200 \
+    --output analysis/mdp_meta_value_dataset.pt
+```
+
+**Output**: Dataset with policy parameters → multi-episode returns
+
+#### 2. Meta-Value Trainer
+
+Train MLP regressor V(θ) to predict policy returns from parameters:
+
+```bash
+python -m src.analysis.train_offline_mdp_meta_value \
+    --dataset-path analysis/mdp_meta_value_dataset.pt \
+    --output-dir analysis/meta_value_model \
+    --hidden-dims 256 128 64 \
+    --epochs 200
+```
+
+**Target quality**: Pearson correlation ≥ 0.95 on validation set
+
+#### 3. Planning Agent
+
+REINFORCE agent that blends base policy with meta-value-guided exploration:
+
+```bash
+python -m experiments.run_experiment --config experiments/chain_mdp_planning.yaml
+```
+
+**Blended policy**: π(a|s) = (1-w)π_base + wπ_plan
+
+### Evaluation
+
+Compare baseline vs planning performance:
+
+```bash
+python -m analysis.mdp_planning_comparison \
+    --baseline-dir logs/chain_mdp_baseline/run_XXX \
+    --planning-dir logs/chain_mdp_planning/run_YYY \
+    --output-dir analysis/planning_comparison
+```
+
+**Metrics**:
+- Final return improvement
+- Learning speed (episodes to 80% success)
+- Meta-value prediction quality
+
+### Files
+
+**Scripts**:
+- [`src/analysis/build_mdp_meta_value_dataset.py`](src/analysis/build_mdp_meta_value_dataset.py) - Dataset builder
+- [`src/analysis/train_offline_mdp_meta_value.py`](src/analysis/train_offline_mdp_meta_value.py) - Meta-value trainer
+- [`src/analysis/evaluate_mdp_meta_value.py`](src/analysis/evaluate_mdp_meta_value.py) - Model evaluation
+- [`src/agents/mdp_planning_agent.py`](src/agents/mdp_planning_agent.py) - Planning agent
+- [`analysis/mdp_planning_comparison.py`](analysis/mdp_planning_comparison.py) - Comparison tool
+
+**Configs**:
+- [`experiments/chain_mdp_planning.yaml`](experiments/chain_mdp_planning.yaml) - Planning experiment
+
+**Documentation**:
+- [`mdp_experiments/README.md`](mdp_experiments/README.md) - Project overview
+- [`analysis/mdp_meta_value_spec.md`](analysis/mdp_meta_value_spec.md) - Dataset specification
+- [`mdp_experiments/CHAIN_MDP_NOTES.md`](mdp_experiments/CHAIN_MDP_NOTES.md) - Environment notes
+
+**Tests**:
+- [`tests/test_build_mdp_meta_value_dataset.py`](tests/test_build_mdp_meta_value_dataset.py) - Dataset builder tests
+
+### Key Differences from Bandits
+
+| Aspect | Bandits | MDPs |
+|--------|---------|------|
+| **Target** | Single-episode reward | Multi-episode average return |
+| **Variance** | High (σ=1.0) | Low (σ/√K_eval) |
+| **Sample complexity** | 385 episodes | ~22 episodes (17.3x better) |
+| **Offline correlation** | 0.98 | Expected ≥0.95 |
+| **Online correlation** | 0.018-0.070 (failed) | To be measured |
+
+### Usage Example
+
+Full workflow from baseline to planning:
+
+```bash
+# 1. Train baseline (with periodic checkpoints)
+python -m experiments.run_experiment --config experiments/chain_mdp_baseline.yaml
+
+# 2. Build meta-value dataset
+python -m src.analysis.build_mdp_meta_value_dataset \
+    --run-dir logs/chain_mdp_baseline/run_XXX \
+    --config experiments/chain_mdp_baseline.yaml \
+    --snapshot-interval 20 \
+    --n-eval-episodes 200 \
+    --output analysis/mdp_meta_value_dataset.pt
+
+# 3. Train meta-value model
+python -m src.analysis.train_offline_mdp_meta_value \
+    --dataset-path analysis/mdp_meta_value_dataset.pt \
+    --output-dir analysis/meta_value_model
+
+# 4. Evaluate meta-value model
+python -m src.analysis.evaluate_mdp_meta_value \
+    --dataset-path analysis/mdp_meta_value_dataset.pt \
+    --model-path analysis/meta_value_model/model.pt \
+    --output-dir analysis/meta_value_eval
+
+# 5. Train planning agent
+python -m experiments.run_experiment --config experiments/chain_mdp_planning.yaml
+
+# 6. Compare performance
+python -m analysis.mdp_planning_comparison \
+    --baseline-dir logs/chain_mdp_baseline/run_XXX \
+    --planning-dir logs/chain_mdp_planning/run_YYY \
+    --output-dir analysis/planning_comparison
+```
+
 ## Experiment Guidelines
 
 Following strict research standards:
