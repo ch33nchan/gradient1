@@ -374,3 +374,38 @@ Despite negative result, this work provides:
 
 **Next: MDP experiments** → See `mdp_experiments/README.md`
 
+
+
+## Sample Efficiency Analysis
+
+### Why Single-Episode Rewards Are Insufficient
+
+Quantitative analysis of reward estimation variance:
+
+| Averaging Horizon | Std Error | Correct Ranking | Optimal Ranked #1 |
+|-------------------|-----------|-----------------|-------------------|
+|   1 episodes | 1.0000 |   4.3% |  57.9% |
+|  10 episodes | 0.3162 |  25.0% |  96.9% |
+|  50 episodes | 0.1414 |  64.0% | 100.0% |
+| 100 episodes | 0.1000 |  83.7% | 100.0% |
+| 200 episodes | 0.0707 |  95.7% | 100.0% |
+| 300 episodes | 0.0577 |  98.5% | 100.0% |
+| 500 episodes | 0.0447 |  99.9% | 100.0% |
+
+**Key Finding**: Single-episode rewards have **17.3x higher** variance than 300-episode averages.
+
+### Sample Complexity
+
+To reliably distinguish arms with 95% confidence:
+
+- **Minimum gap between arms**: 0.200
+- **Gap (optimal vs 2nd-best)**: 0.900
+- **Episodes needed for correct full ranking**: 385
+- **Episodes needed to identify optimal**: 19
+
+**Conclusion**: Single-episode rewards are **19x below** the required sample size for reliable meta-value learning.
+
+This explains why:
+1. Offline training (300-ep averages) achieves 0.98 correlation
+2. Online training (1-ep rewards) achieves only 0.018-0.070 correlation
+3. The gap is **structural**, not a hyperparameter issue

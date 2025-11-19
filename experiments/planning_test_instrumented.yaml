@@ -1,5 +1,14 @@
+# ============================================================================
+# FINAL BANDIT CONFIG - DO NOT MODIFY
+# ============================================================================
+# This config represents the final state of bandit meta-value experiments.
+# Bandit work is CLOSED with negative result (see README.md).
+# This was a short instrumented run for diagnostic purposes.
+# See: analysis/planning_failure_diagnosis_report.md
+# ============================================================================
+#
 # Quick test run with planning instrumentation
-# For testing planning trace logging
+# For testing planning trace logging and diagnosing why planning fails
 
 experiment:
   name: "planning_test_instrumented"

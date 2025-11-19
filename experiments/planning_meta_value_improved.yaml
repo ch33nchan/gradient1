@@ -1,3 +1,12 @@
+# ============================================================================
+# FINAL BANDIT CONFIG - DO NOT MODIFY
+# ============================================================================
+# This config represents the final state of bandit meta-value experiments.
+# Bandit work is CLOSED with negative result (see README.md).
+# Further tuning will not help - problem is structural, not parametric.
+# See: analysis/planning_failure_diagnosis_report.md
+# ============================================================================
+#
 # Planning with Improved Meta-Value Training
 #
 # Tests whether improved meta-value training (correlation 0.12-0.31) is sufficient
@@ -9,6 +18,8 @@
 # 3. Planning ENABLED with meta-value-based objective
 #
 # Key question: Does V(θ) correlation 0.12-0.31 enable useful planning?
+#
+# Result: NEGATIVE - Planning makes performance 6.2x worse (regret 144.9 → 896.5)
 
 experiment:
   name: "planning_meta_value_improved"

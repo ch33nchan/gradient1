@@ -207,6 +207,66 @@ The agent is compared against standard bandit algorithms:
 - **UCB (Upper Confidence Bound)**: Optimistic exploration based on uncertainty
 - **Thompson Sampling**: Bayesian approach with Beta distributions
 
+## Bandit Phase: Negative Result (CLOSED)
+
+**Status**: The bandit meta-value planning experiments have concluded with a **negative result**. This work is considered **CLOSED**.
+
+### Summary
+
+After comprehensive investigation, we found that **meta-value-based planning is not viable for bandit tasks** with online single-episode training:
+
+- **Root cause**: Meta-value network learns inverted preferences (assigns lowest score to optimal arm)
+- **Performance impact**: Planning makes performance **6.2x worse** than no planning, **107x worse** than UCB
+- **Sample complexity**: Single-episode rewards have **17.3x higher variance** than needed (385 episodes required for reliable estimates)
+- **Offline validation**: Meta-value architecture works perfectly offline (0.98 correlation with 300-episode averages)
+- **Online failure**: Online correlation only 0.018-0.070 (98% degradation)
+
+**Key insight**: "Confident wrong decisions are worse than uncertain random exploration."
+
+### Documentation
+
+Complete analysis and findings available in:
+
+- **Main reports**:
+  - [`analysis/planning_failure_diagnosis_report.md`](analysis/planning_failure_diagnosis_report.md) - Complete diagnostic report
+  - [`analysis/meta_value_summary.md`](analysis/meta_value_summary.md) - Performance summary
+
+- **Figures and data**:
+  - [`analysis/meta_value_vs_planning_overview.png`](analysis/meta_value_vs_planning_overview.png) - Comparison plots
+  - [`analysis/meta_value_vs_planning_overview.csv`](analysis/meta_value_vs_planning_overview.csv) - Statistics table
+  - [`analysis/planning_diagnosis.png`](analysis/planning_diagnosis.png) - Diagnostic visualizations
+  - [`analysis/meta_value_noise_ablation.png`](analysis/meta_value_noise_ablation.png) - Noise ablation study
+  - [`analysis/sample_efficiency_analysis.png`](analysis/sample_efficiency_analysis.png) - Variance analysis
+
+- **Regenerate all analysis**:
+  ```bash
+  python analysis/run_bandit_story.py
+  ```
+
+### Final Bandit Configs
+
+The following configs represent final experiments (no further tuning):
+
+- [`experiments/meta_value_improved.yaml`](experiments/meta_value_improved.yaml) - Improved meta-value training without planning
+- [`experiments/planning_meta_value_improved.yaml`](experiments/planning_meta_value_improved.yaml) - Planning with improved meta-value (negative result)
+- [`experiments/planning_test_instrumented.yaml`](experiments/planning_test_instrumented.yaml) - Short instrumented test run
+- [`experiments/ablation_*.yaml`](experiments/) - Planning objective ablations
+
+### Recommendations
+
+**For bandits**: Use direct methods (UCB, Thompson Sampling, ε-greedy)
+
+**Do NOT use**: Meta-value planning (adds complexity without benefit)
+
+### Next Steps
+
+Meta-value learning may succeed in **multi-step environments (MDPs)** where:
+- Multi-step returns provide less noisy targets
+- Value functions are structurally necessary
+- Credit assignment is non-trivial
+
+See [`mdp_experiments/README.md`](mdp_experiments/README.md) for MDP project specifications.
+
 ## Experiment Guidelines
 
 Following strict research standards:

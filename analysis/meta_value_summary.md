@@ -79,6 +79,60 @@ This is worse than random exploration because:
 - No planning run: `logs/meta_value_improved/run_2025-11-13_20-28-09/`
 - Planning run: `logs/planning_meta_value_improved/run_2025-11-13_21-02-08/`
 
+## How to Regenerate Figures
+
+All bandit analysis can be regenerated from the saved log files using the following scripts:
+
+### Single Command (Recommended)
+
+Run the complete analysis driver script:
+```bash
+python3 analysis/run_bandit_story.py
+```
+
+This regenerates all figures, prints key statistics, and creates:
+- `analysis/meta_value_vs_planning_overview.png` - Performance comparison
+- `analysis/meta_value_vs_planning_overview.csv` - Summary statistics
+- `analysis/planning_diagnosis.png` - Planning trace diagnostics (if available)
+- `analysis/meta_value_noise_ablation.png` - Correlation threshold analysis
+- `analysis/sample_efficiency_analysis.png` - Variance analysis
+
+### Individual Scripts
+
+For specific analyses:
+
+1. **Compare experiments** (requires: `logs/meta_value_improved/`, `logs/planning_meta_value_improved/`):
+   ```bash
+   python3 analysis/compare_meta_value_experiments.py
+   ```
+   Generates comparison plots and statistics showing planning vs no-planning performance.
+
+2. **Diagnose planning failure** (requires: `logs/planning_test_instrumented/`):
+   ```bash
+   python3 analysis/diagnose_planning_failure.py
+   ```
+   Analyzes planning trace to show why meta-value guidance is inverted.
+   Note: Uses instrumented test run for detailed per-episode diagnostics.
+
+3. **Meta-value noise ablation** (no logs required - synthetic):
+   ```bash
+   python3 analysis/meta_value_noise_ablation.py
+   ```
+   Tests how correlation degradation affects planning via controlled noise injection.
+
+4. **Sample efficiency analysis** (no logs required - synthetic):
+   ```bash
+   python3 analysis/sample_efficiency_analysis.py
+   ```
+   Quantifies variance problem: why single-episode rewards are insufficient.
+
+### Dependencies
+
+- Core scripts (1) depend on main experiment runs
+- Diagnostic script (2) requires instrumented test run for planning trace
+- Synthetic analyses (3, 4) have no log dependencies
+- All scripts use only standard dependencies: numpy, pandas, matplotlib
+
 
 ## Meta-Value Quality Threshold (Noise Ablation)
 
