@@ -266,6 +266,250 @@ class MDPTrainer:
 - MDPs: Continuous feedback through trajectory
 - Better signal for learning which parameters lead to good behavior
 
+## Meta-Value Target Specification
+
+### Overview
+
+The meta-value network V(θ) predicts the quality of policy parameters θ. For MDPs, quality is measured by **multi-episode average return**.
+
+### Target Definition
+
+For a policy parameter snapshot θ_k:
+
+```
+Target(θ_k) = (1/K_eval) * Σ_{i=1}^{K_eval} G_i(θ_k)
+
+where:
+  G_i(θ_k) = discounted return of episode i using policy π(·|·; θ_k)
+  G_i = Σ_{t=0}^{T-1} γ^t r_t
+  K_eval = number of evaluation episodes (100-300 recommended)
+```
+
+### Rationale
+
+**Why multi-episode average?**
+- Single-episode returns have high variance (stochastic policy, environment)
+- Multi-episode average reduces noise by factor of √K_eval
+- Bandit analysis showed single rewards insufficient (need 385 samples)
+- For Chain MDP: K_eval=100 should give ~10x lower std than single episode
+
+**Why not use training episodes?**
+- Training episodes use exploration (entropy bonus, stochastic sampling)
+- Evaluation should measure true policy quality (greedy or low-temperature)
+- Avoids confounding exploration noise with policy quality
+
+**Why discounted returns?**
+- Standard RL objective
+- Encourages reaching goal quickly (γ < 1 penalizes longer episodes)
+- Matches what REINFORCE optimizes
+
+### Evaluation Protocol
+
+#### Environment Configuration
+- **Use same environment** as training (same seed, same config)
+- **Reset between episodes** to initial state distribution
+- **No time limits** beyond natural episode termination
+- **Deterministic transitions** (if possible) or fixed seed per evaluation
+
+#### Policy Configuration
+For each snapshot θ_k:
+- **Mode**: Greedy (argmax) or low-temperature (τ=0.1)
+- **No exploration**: Disable entropy bonus, ε-greedy, etc.
+- **Deterministic**: If policy has randomness, use mode or mean
+- **Fixed θ_k**: No parameter updates during evaluation
+
+#### Discount Factor
+- **Use training γ**: Same discount factor as REINFORCE training
+- **Default**: γ = 0.99 (standard for episodic tasks)
+- **Must match**: Training and evaluation discount must be identical
+
+### Dataset Schema
+
+Each sample in the meta-value dataset contains:
+
+#### Required Fields
+
+```python
+{
+  # Identification
+  'policy_id': str,           # Unique ID (e.g., 'run_001_ep_0050')
+  'run_id': str,              # Training run ID
+  'snapshot_episode': int,    # Training episode when snapshot taken
+
+  # Target
+  'target_return': float,     # Multi-episode average return
+  'target_std': float,        # Standard deviation across episodes
+  'n_eval_episodes': int,     # K_eval (how many episodes averaged)
+
+  # Features (inputs to V(θ))
+  'policy_params': np.ndarray,  # Flattened θ (or θ_hash if too large)
+  'param_norm': float,          # ||θ||_2
+  'param_mean': float,          # mean(θ)
+  'param_std': float,           # std(θ)
+
+  # Training context (optional but recommended)
+  'training_return_ema': float,  # EMA of training returns at snapshot
+  'training_episodes_seen': int, # Total episodes trained so far
+  'gradient_norm': float,        # ||∇θ|| at this snapshot
+  'policy_entropy': float,       # Entropy of π(·|s₀; θ)
+
+  # Environment metadata
+  'env_name': str,            # 'chain_mdp', 'gridworld', etc.
+  'env_config': dict,         # Environment configuration
+  'discount_factor': float,   # γ used for returns
+}
+```
+
+#### Optional Fields (for richer features)
+
+```python
+{
+  # Episode statistics
+  'eval_episode_lengths': List[int],    # Length of each eval episode
+  'eval_success_rate': float,           # Fraction reaching goal
+  'eval_min_return': float,             # Min across eval episodes
+  'eval_max_return': float,             # Max across eval episodes
+
+  # Policy analysis
+  'initial_state_action_probs': np.ndarray,  # π(·|s₀; θ)
+  'kl_from_uniform': float,                  # KL(π || uniform)
+  'max_action_prob': float,                  # max_a π(a|s₀; θ)
+
+  # Parameter statistics
+  'param_percentiles': np.ndarray,  # [p25, p50, p75] of θ values
+  'param_sparsity': float,          # Fraction |θ| < 1e-3
+  'param_change_from_init': float,  # ||θ - θ_init||
+}
+```
+
+### Storage Format
+
+**Option 1: PyTorch .pt file (Recommended)**
+```python
+{
+  'samples': List[Dict],  # List of sample dicts (schema above)
+  'metadata': {
+    'created_at': str,
+    'n_samples': int,
+    'snapshot_interval': int,
+    'eval_episodes_per_snapshot': int,
+    'source_runs': List[str],
+  }
+}
+```
+
+**Option 2: Separate arrays + CSV index**
+```
+mdp_meta_value_dataset/
+  features.npy          # (N, D) feature matrix
+  targets.npy           # (N,) target returns
+  metadata.csv          # Index with policy_id, snapshot_episode, etc.
+  config.yaml           # Dataset configuration
+```
+
+**Recommendation**: Use PyTorch .pt for simplicity. Can convert to numpy/CSV later if needed.
+
+### Snapshot Selection Strategy
+
+**Uniform spacing (recommended for exploration)**:
+- Take snapshots every N episodes (e.g., N=20)
+- Captures full training trajectory
+- Good diversity in parameter space
+- Example: 500 episodes, snapshot every 20 → 25 snapshots
+
+**Performance-based sampling (for focused learning)**:
+- Take more snapshots when performance is improving
+- Skip plateaus to save evaluation budget
+- Example: Snapshot if ΔR > threshold in last 10 episodes
+
+**Random sampling (for unbiased distribution)**:
+- Randomly sample episodes to snapshot
+- Ensures no correlation between snapshots
+- Good for train/test split
+
+**Default recommendation**: Uniform spacing with N=20 for 500-episode runs.
+
+### Train/Test Split
+
+**Temporal split (recommended)**:
+- Train: First 70% of snapshots (by episode number)
+- Test: Last 30% of snapshots
+- Simulates real use case (predict future performance)
+- Example: Episodes 0-350 train, 350-500 test
+
+**Random split (for i.i.d. assumption)**:
+- Randomly assign 70% train, 30% test
+- Better if snapshots are independent
+- Less realistic for online meta-learning
+
+**Cross-run split (for generalization)**:
+- Train: Snapshots from runs 1-3
+- Test: Snapshots from run 4
+- Tests generalization across different training trajectories
+- Most realistic but requires multiple runs
+
+### Expected Dataset Size
+
+**For Chain MDP baseline**:
+- Training run: 500 episodes
+- Snapshot interval: 20 episodes
+- Snapshots per run: 25
+- Eval episodes per snapshot: 100
+- Total evaluations: 25 × 100 = 2,500 episodes
+- Training time: ~10 seconds per snapshot @ 200 eps/s = ~250 seconds = 4 minutes
+- Dataset samples: 25 per run
+
+**For multiple runs**:
+- 4 runs × 25 snapshots = 100 samples
+- Sufficient for training small MLP meta-value network
+- Larger datasets better for generalization
+
+### Quality Checks
+
+Before using dataset, verify:
+
+1. **Target variance is reasonable**:
+   - Mean target_std should be 10-30% of mean target_return
+   - If > 50%, increase K_eval
+
+2. **Snapshots span parameter space**:
+   - Check param_norm varies across snapshots
+   - If all similar, training might have converged too quickly
+
+3. **Returns are not all identical**:
+   - If all returns ≈ optimal, no learning signal
+   - May need earlier snapshots or harder environment
+
+4. **No data leakage**:
+   - Evaluation uses different episodes than training
+   - Test set is temporally later or from different runs
+
+### Example Usage
+
+```python
+# Load dataset
+data = torch.load('mdp_meta_value_dataset.pt')
+samples = data['samples']
+
+# Extract features and targets
+X = np.array([s['policy_params'] for s in samples])
+y = np.array([s['target_return'] for s in samples])
+
+# Train/test split (temporal)
+split_idx = int(0.7 * len(samples))
+X_train, X_test = X[:split_idx], X[split_idx:]
+y_train, y_test = y[:split_idx], y[split_idx:]
+
+# Train meta-value network
+meta_value_net = MLPRegressor(input_dim=X.shape[1], hidden_dim=64)
+meta_value_net.fit(X_train, y_train)
+
+# Evaluate
+y_pred = meta_value_net.predict(X_test)
+correlation = np.corrcoef(y_test, y_pred)[0, 1]
+print(f"Test correlation: {correlation:.3f}")
+```
+
 ## Implementation Plan
 
 1. **Phase 1**: Chain MDP (simplest)
