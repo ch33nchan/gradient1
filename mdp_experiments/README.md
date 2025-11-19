@@ -510,6 +510,83 @@ correlation = np.corrcoef(y_test, y_pred)[0, 1]
 print(f"Test correlation: {correlation:.3f}")
 ```
 
+### Building the Dataset
+
+**Implementation**: [`src/analysis/build_mdp_meta_value_dataset.py`](../src/analysis/build_mdp_meta_value_dataset.py)
+
+**Command-line usage**:
+```bash
+python -m src.analysis.build_mdp_meta_value_dataset \
+  --run-dir logs/chain_mdp_baseline/run_2025-11-19_06-18-51 \
+  --config experiments/chain_mdp_baseline.yaml \
+  --snapshot-interval 20 \
+  --n-eval-episodes 200 \
+  --output analysis/mdp_meta_value_dataset.pt
+```
+
+**Arguments**:
+- `--run-dir`: Path to training run directory (or parent logs dir)
+- `--config`: Experiment config (defines environment and agent architecture)
+- `--snapshot-interval`: Episode interval for snapshots (default: 20)
+- `--n-eval-episodes`: Evaluation episodes per snapshot (default: 200)
+- `--output`: Output dataset path (default: analysis/mdp_meta_value_dataset.pt)
+
+**Expected output for Chain MDP baseline (500 episodes)**:
+- Snapshots: 25 (episodes 20, 40, 60, ..., 500)
+- Eval episodes per snapshot: 200
+- Total evaluations: 5,000 episodes (~25 seconds @ 200 eps/s)
+- Dataset samples: 25 per run
+- Dataset size: ~1 MB for single run
+
+**Multi-run dataset** (recommended for generalization):
+```bash
+# Train 4 runs with different seeds
+for seed in 42 43 44 45; do
+  python -m experiments.run_experiment \
+    --config experiments/chain_mdp_baseline.yaml \
+    environment.seed=$seed
+done
+
+# Build dataset from all runs
+python -m src.analysis.build_mdp_meta_value_dataset \
+  --run-dir logs/chain_mdp_baseline \
+  --config experiments/chain_mdp_baseline.yaml \
+  --snapshot-interval 20 \
+  --n-eval-episodes 200 \
+  --output analysis/mdp_meta_value_dataset_4runs.pt
+```
+
+This produces 100 samples (4 runs × 25 snapshots), sufficient for training meta-value network.
+
+**Output structure**:
+```python
+{
+  'samples': [
+    {
+      'policy_id': 'run_001_ep_0020',
+      'snapshot_episode': 20,
+      'target_return': 0.923,
+      'target_std': 0.012,
+      'policy_params': array([...]),  # 4930-D
+      # ... other fields
+    },
+    # ... more samples
+  ],
+  'metadata': {
+    'created_at': '2025-11-19T12:00:00',
+    'n_samples': 100,
+    'snapshot_interval': 20,
+    'eval_episodes_per_snapshot': 200,
+    'source_runs': ['run_001', 'run_002', 'run_003', 'run_004'],
+  }
+}
+```
+
+**Requirements**:
+- Training runs must have periodic checkpoints (set `training.save_interval` in config)
+- Agent architecture (hidden_dim) must match between training and dataset building
+- Environment config must be identical for training and evaluation
+
 ## Implementation Plan
 
 1. **Phase 1**: Chain MDP (simplest)

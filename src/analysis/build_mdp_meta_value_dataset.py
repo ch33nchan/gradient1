@@ -216,6 +216,7 @@ def build_dataset_from_run(
             action_dim=env.get_action_dim(),
             learning_rate=config['agent'].get('learning_rate', 0.01),
             discount_factor=env.get_discount_factor(),
+            hidden_dim=config['agent'].get('hidden_dim', 64),
             seed=config['environment']['seed']
         )
 
