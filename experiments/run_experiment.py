@@ -15,10 +15,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils import set_seed, create_experiment_dir
-from src.envs import BanditEnvironment
-from src.agents import SelfGradientBanditAgent
+from src.envs import BanditEnvironment, ChainMDP
+from src.agents import SelfGradientBanditAgent, REINFORCEAgent
 from src.models.bandit_models import BaselineAgent
-from src.training import BanditTrainer
+from src.training import BanditTrainer, MDPTrainer
 
 
 def load_config(config_path: str) -> dict:
@@ -203,6 +203,101 @@ def run_bandit_experiment(config: dict, exp_dir: Path):
     print(f"\nExperiment complete. Results saved to: {exp_dir}")
 
 
+def create_mdp_environment(config: dict):
+    """Create MDP environment from config."""
+    env_config = config['environment']
+    env_type = env_config.get('env_type', 'chain_mdp')
+
+    if env_type == 'chain_mdp':
+        env = ChainMDP(
+            n_states=env_config['n_states'],
+            max_steps=env_config.get('max_steps', 100),
+            discount_factor=env_config.get('discount_factor', 0.99),
+            seed=env_config['seed']
+        )
+    else:
+        raise ValueError(f"Unknown MDP environment type: {env_type}")
+
+    return env
+
+
+def create_reinforce_agent(config: dict, env):
+    """Create REINFORCE agent from config."""
+    agent_config = config['agent']
+
+    agent = REINFORCEAgent(
+        state_dim=env.get_state_dim(),
+        action_dim=env.get_action_dim(),
+        learning_rate=agent_config.get('learning_rate', 0.001),
+        discount_factor=env.get_discount_factor(),
+        hidden_dim=agent_config.get('hidden_dim', 64),
+        use_baseline=agent_config.get('use_baseline', False),
+        entropy_bonus=agent_config.get('entropy_bonus', 0.0),
+        seed=config['environment']['seed']
+    )
+
+    return agent
+
+
+def run_mdp_experiment(config: dict, exp_dir: Path):
+    """Run MDP experiment.
+
+    Args:
+        config: Configuration dictionary
+        exp_dir: Experiment directory
+    """
+    # Set random seed
+    set_seed(config['environment']['seed'])
+
+    # Create components
+    env = create_mdp_environment(config)
+    agent = create_reinforce_agent(config, env)
+
+    # Create trainer
+    trainer = MDPTrainer(
+        env=env,
+        agent=agent,
+        log_dir=exp_dir,
+        log_interval=config['training'].get('log_interval', 10)
+    )
+
+    # Train
+    print(f"\nTraining for {config['training']['n_episodes']} episodes...")
+    metrics_df = trainer.train(n_episodes=config['training']['n_episodes'])
+
+    # Evaluate
+    if config['training'].get('eval_episodes', 0) > 0:
+        print(f"\nEvaluating for {config['training']['eval_episodes']} episodes...")
+        eval_metrics = trainer.evaluate(n_episodes=config['training']['eval_episodes'])
+
+        # Save eval metrics
+        eval_path = exp_dir / 'eval_metrics.yaml'
+        with open(eval_path, 'w') as f:
+            yaml.dump(eval_metrics, f, default_flow_style=False)
+
+    # Save results
+    if config['logging'].get('save_metrics', True):
+        metrics_path = exp_dir / 'metrics.csv'
+        metrics_df.to_csv(metrics_path, index=False)
+        print(f"Saved metrics to: {metrics_path}")
+
+    if config['logging'].get('save_plots', True):
+        plot_path = exp_dir / 'results.png'
+        trainer.plot_training(output_path=plot_path, window=config['training'].get('plot_window', 10))
+        print(f"Saved plots to: {plot_path}")
+
+    # Save final checkpoint
+    checkpoint_path = exp_dir / 'final_checkpoint.pt'
+    agent.save(str(checkpoint_path))
+
+    # Save config
+    config_path = exp_dir / 'config.yaml'
+    with open(config_path, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False)
+
+    print(f"\nExperiment complete. Results saved to: {exp_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Run gradient world model experiments'
@@ -244,6 +339,8 @@ def main():
 
     if exp_type == 'bandit':
         run_bandit_experiment(config, exp_dir)
+    elif exp_type == 'mdp':
+        run_mdp_experiment(config, exp_dir)
     else:
         raise ValueError(f"Unknown experiment type: {exp_type}")
 
