@@ -55,7 +55,7 @@ def load_run_metrics(run_dir: Path) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     planning_metrics_path = run_dir / 'planning_metrics.yaml'
     if planning_metrics_path.exists():
         with open(planning_metrics_path, 'r') as f:
-            planning_metrics = yaml.safe_load(f)
+            planning_metrics = yaml.load(f, Loader=yaml.UnsafeLoader)
             config['planning_metrics'] = planning_metrics
 
     return metrics_df, config

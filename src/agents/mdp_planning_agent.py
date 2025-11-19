@@ -176,7 +176,7 @@ class MDPPlanningAgent(REINFORCEAgent):
             state: Current state
 
         Returns:
-            planning_probs: Planning action distribution
+            planning_probs: Planning action distribution (normalized)
         """
         # Get current meta-value
         current_meta_value = self.evaluate_policy_with_meta_value()
@@ -185,15 +185,25 @@ class MDPPlanningAgent(REINFORCEAgent):
         # More sophisticated: sample trajectories, evaluate resulting policies
         # Simpler: uniform + slight bias toward less-visited actions
 
-        # Start with uniform (encourages exploration)
-        planning_probs = np.ones(self.action_dim) / self.action_dim
+        # Start with uniform scores
+        planning_scores = np.ones(self.action_dim, dtype=np.float32)
 
         # Add slight preference based on state (go right in chain MDP)
         # This is environment-specific but helps demonstrate the concept
         if state < self.state_dim - 1:
             # Bias toward action 1 (right) if not at goal
-            planning_probs[1] = planning_probs[1] * 1.5
-            planning_probs = planning_probs / planning_probs.sum()
+            planning_scores[1] = planning_scores[1] * 1.5
+
+        # Convert scores → probabilities with normalization
+        planning_scores = np.asarray(planning_scores, dtype=np.float32)
+        planning_scores = planning_scores - planning_scores.max()  # numerical stability
+        planning_probs = np.exp(planning_scores)
+        total = float(planning_probs.sum())
+
+        if not np.isfinite(total) or total <= 0.0:
+            planning_probs = np.ones(self.action_dim, dtype=np.float32) / float(self.action_dim)
+        else:
+            planning_probs = planning_probs / total
 
         return planning_probs
 
@@ -240,8 +250,18 @@ class MDPPlanningAgent(REINFORCEAgent):
             planning_probs = self.get_planning_distribution(state)
 
             # Blend distributions
-            blended_probs = (1 - self.planning_weight) * base_probs + \
+            blended_probs = (1.0 - self.planning_weight) * base_probs + \
                            self.planning_weight * planning_probs
+
+            # Ensure non-negative and normalize
+            blended_probs = np.asarray(blended_probs, dtype=np.float32)
+            blended_probs = np.maximum(blended_probs, 0.0)
+
+            total = float(blended_probs.sum())
+            if not np.isfinite(total) or total <= 0.0:
+                blended_probs = np.ones(self.action_dim, dtype=np.float32) / float(self.action_dim)
+            else:
+                blended_probs = blended_probs / total
 
             # Sample from blended distribution
             action = np.random.choice(self.action_dim, p=blended_probs)
@@ -315,7 +335,8 @@ class MDPPlanningAgent(REINFORCEAgent):
         checkpoint = {
             'policy_state_dict': self.policy.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'baseline_state_dict': self.baseline.state_dict() if self.use_baseline else None,
+            'baseline_value': self.baseline_value,
+            'baseline_count': self.baseline_count,
             'planning_weight': self.planning_weight,
             'planning_metrics': self.planning_metrics,
         }
@@ -331,8 +352,11 @@ class MDPPlanningAgent(REINFORCEAgent):
         self.policy.load_state_dict(checkpoint['policy_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-        if self.use_baseline and checkpoint['baseline_state_dict'] is not None:
-            self.baseline.load_state_dict(checkpoint['baseline_state_dict'])
+        if 'baseline_value' in checkpoint:
+            self.baseline_value = checkpoint['baseline_value']
+
+        if 'baseline_count' in checkpoint:
+            self.baseline_count = checkpoint['baseline_count']
 
         if 'planning_weight' in checkpoint:
             self.planning_weight = checkpoint['planning_weight']

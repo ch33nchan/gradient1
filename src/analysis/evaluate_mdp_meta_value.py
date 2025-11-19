@@ -130,32 +130,66 @@ def analyze_calibration(y_true: np.ndarray, y_pred: np.ndarray, n_buckets: int =
     Returns:
         calibration_df: DataFrame with bucket statistics
     """
-    # Sort by predictions and create buckets
-    sorted_indices = np.argsort(y_pred)
-    bucket_size = len(y_pred) // n_buckets
+    y_true = np.asarray(y_true, dtype=np.float32)
+    y_pred = np.asarray(y_pred, dtype=np.float32)
 
-    calibration_data = []
+    n = len(y_true)
+    if n == 0:
+        raise ValueError("Empty input to analyze_calibration")
 
+    # For tiny datasets, limit buckets to number of samples
+    n_buckets = max(1, min(n_buckets, n))
+
+    pred_min = float(y_pred.min())
+    pred_max = float(y_pred.max())
+    if pred_min == pred_max:
+        # Degenerate case: all predictions same → single bucket
+        return pd.DataFrame([{
+            "bucket": 0,
+            "count": int(n),
+            "true_mean": float(y_true.mean()),
+            "pred_mean": float(y_pred.mean()),
+            "pred_min": pred_min,
+            "pred_max": pred_max,
+        }])
+
+    edges = np.linspace(pred_min, pred_max, n_buckets + 1, dtype=np.float32)
+
+    rows = []
     for i in range(n_buckets):
-        start_idx = i * bucket_size
-        end_idx = (i + 1) * bucket_size if i < n_buckets - 1 else len(y_pred)
+        left, right = edges[i], edges[i + 1]
+        if i == n_buckets - 1:
+            mask = (y_pred >= left) & (y_pred <= right)
+        else:
+            mask = (y_pred >= left) & (y_pred < right)
 
-        bucket_indices = sorted_indices[start_idx:end_idx]
+        if not np.any(mask):
+            continue
 
-        bucket_data = {
-            'bucket': i + 1,
-            'n_samples': len(bucket_indices),
-            'pred_min': np.min(y_pred[bucket_indices]),
-            'pred_max': np.max(y_pred[bucket_indices]),
-            'pred_mean': np.mean(y_pred[bucket_indices]),
-            'true_mean': np.mean(y_true[bucket_indices]),
-            'mae': np.mean(np.abs(y_pred[bucket_indices] - y_true[bucket_indices])),
-            'bias': np.mean(y_pred[bucket_indices] - y_true[bucket_indices]),
-        }
+        bucket_y_true = y_true[mask]
+        bucket_y_pred = y_pred[mask]
 
-        calibration_data.append(bucket_data)
+        rows.append({
+            "bucket": i,
+            "count": int(mask.sum()),
+            "true_mean": float(bucket_y_true.mean()),
+            "pred_mean": float(bucket_y_pred.mean()),
+            "pred_min": float(bucket_y_pred.min()),
+            "pred_max": float(bucket_y_pred.max()),
+        })
 
-    return pd.DataFrame(calibration_data)
+    if not rows:
+        # Extremely degenerate fallback; should not happen, but keep it safe
+        rows.append({
+            "bucket": 0,
+            "count": int(n),
+            "true_mean": float(y_true.mean()),
+            "pred_mean": float(y_pred.mean()),
+            "pred_min": pred_min,
+            "pred_max": pred_max,
+        })
+
+    return pd.DataFrame(rows)
 
 
 def plot_predictions(
