@@ -32,34 +32,7 @@ import sys
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-
-def convert_to_json_serializable(obj: Any) -> Any:
-    """Convert numpy/torch types to JSON-serializable Python types.
-
-    Args:
-        obj: Object to convert (can be scalar, dict, list, etc.)
-
-    Returns:
-        JSON-serializable version of obj
-    """
-    if isinstance(obj, dict):
-        return {k: convert_to_json_serializable(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [convert_to_json_serializable(item) for item in obj]
-    elif isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, torch.Tensor):
-        if obj.numel() == 1:
-            return obj.item()
-        else:
-            return obj.tolist()
-    else:
-        # Plain Python types: return as-is
-        return obj
+from src.analysis.json_utils import convert_to_json_serializable
 
 
 class MetaValueNetwork(nn.Module):

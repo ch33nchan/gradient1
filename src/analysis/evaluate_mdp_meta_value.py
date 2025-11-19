@@ -32,6 +32,7 @@ import sys
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from src.analysis.json_utils import convert_to_json_serializable
 from src.analysis.train_offline_mdp_meta_value import (
     MetaValueNetwork,
     extract_features_and_targets,
@@ -435,13 +436,15 @@ def main():
 
     # Save metrics
     metrics_path = output_dir / 'eval_metrics.json'
+    metrics_dict = {
+        'split': args.split,
+        'n_samples': len(eval_samples),
+        'metrics': metrics,
+        'timestamp': datetime.now().isoformat(),
+    }
+    # Convert numpy/torch types to JSON-serializable Python types
     with open(metrics_path, 'w') as f:
-        json.dump({
-            'split': args.split,
-            'n_samples': len(eval_samples),
-            'metrics': metrics,
-            'timestamp': datetime.now().isoformat(),
-        }, f, indent=2)
+        json.dump(convert_to_json_serializable(metrics_dict), f, indent=2)
     print(f"\nSaved metrics: {metrics_path}")
 
     # Calibration analysis

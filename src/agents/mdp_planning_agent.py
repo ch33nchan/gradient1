@@ -91,6 +91,15 @@ class MDPPlanningAgent(REINFORCEAgent):
         print(f"  Meta-value model loaded (input_dim={checkpoint['input_dim']})")
         print(f"  Planning weight: {planning_weight}")
 
+        # Initialize buffer for compatibility with get_policy_features
+        # This mirrors the episode tracking from base REINFORCE agent
+        self.buffer = {
+            'states': [],
+            'actions': [],
+            'rewards': [],
+            'log_probs': [],
+        }
+
         # Planning metrics
         self.planning_metrics = {
             'meta_value_scores': [],
@@ -188,6 +197,24 @@ class MDPPlanningAgent(REINFORCEAgent):
 
         return planning_probs
 
+    def store_transition(self, state: int, action: int, reward: float):
+        """Store transition in episode buffer.
+
+        Overrides base class to also update the buffer dict used by get_policy_features.
+
+        Args:
+            state: State index
+            action: Action index
+            reward: Reward received
+        """
+        # Call parent to update episode_states, episode_actions, episode_rewards
+        super().store_transition(state, action, reward)
+
+        # Also update buffer dict for planning features
+        self.buffer['states'].append(state)
+        self.buffer['actions'].append(action)
+        self.buffer['rewards'].append(reward)
+
     def act(self, state: int, greedy: bool = False) -> int:
         """Select action with blended policy.
 
@@ -253,6 +280,12 @@ class MDPPlanningAgent(REINFORCEAgent):
             'meta_value_change': meta_value_after - meta_value_before,
             'planning_weight': self.planning_weight,
         })
+
+        # Clear episode buffer (parent clears episode_states/actions/rewards)
+        self.buffer['states'].clear()
+        self.buffer['actions'].clear()
+        self.buffer['rewards'].clear()
+        self.buffer['log_probs'].clear()
 
         return base_metrics
 
