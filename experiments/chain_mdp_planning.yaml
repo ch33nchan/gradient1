@@ -1,0 +1,39 @@
+# Chain MDP with Meta-Value Planning
+#
+# This config runs Chain MDP with planning-aware REINFORCE agent.
+# The agent uses meta-value model to guide exploration.
+
+experiment:
+  name: "chain_mdp_planning"
+  type: "mdp_planning"
+  description: "Chain MDP with meta-value guided planning"
+
+environment:
+  env_type: "chain_mdp"
+  n_states: 10
+  max_steps: 100
+  discount_factor: 0.99
+  seed: 42
+
+agent:
+  type: "mdp_planning"
+  learning_rate: 0.01
+  hidden_dim: 64
+  use_baseline: true
+  entropy_bonus: 0.01
+
+  # Planning-specific parameters
+  meta_value_model_path: "analysis/meta_value_model/model.pt"
+  planning_weight: 0.1  # Blend: 90% base + 10% planning
+
+training:
+  n_episodes: 500
+  log_interval: 20
+  eval_episodes: 20
+  plot_window: 10
+  save_interval: 0  # No periodic checkpoints for planning runs
+
+logging:
+  log_dir: "logs"
+  save_metrics: true
+  save_plots: true

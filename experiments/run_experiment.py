@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.utils import set_seed, create_experiment_dir
 from src.envs import BanditEnvironment, ChainMDP
 from src.agents import SelfGradientBanditAgent, REINFORCEAgent
+from src.agents.mdp_planning_agent import MDPPlanningAgent
 from src.models.bandit_models import BaselineAgent
 from src.training import BanditTrainer, MDPTrainer
 
@@ -239,6 +240,31 @@ def create_reinforce_agent(config: dict, env):
     return agent
 
 
+def create_mdp_planning_agent(config: dict, env):
+    """Create MDP planning agent from config."""
+    agent_config = config['agent']
+
+    # Verify meta-value model path
+    meta_value_model_path = agent_config.get('meta_value_model_path')
+    if not meta_value_model_path:
+        raise ValueError("meta_value_model_path must be specified for planning agent")
+
+    agent = MDPPlanningAgent(
+        state_dim=env.get_state_dim(),
+        action_dim=env.get_action_dim(),
+        meta_value_model_path=meta_value_model_path,
+        learning_rate=agent_config.get('learning_rate', 0.001),
+        discount_factor=env.get_discount_factor(),
+        hidden_dim=agent_config.get('hidden_dim', 64),
+        use_baseline=agent_config.get('use_baseline', False),
+        entropy_bonus=agent_config.get('entropy_bonus', 0.0),
+        planning_weight=agent_config.get('planning_weight', 0.1),
+        seed=config['environment']['seed']
+    )
+
+    return agent
+
+
 def run_mdp_experiment(config: dict, exp_dir: Path):
     """Run MDP experiment.
 
@@ -251,7 +277,13 @@ def run_mdp_experiment(config: dict, exp_dir: Path):
 
     # Create components
     env = create_mdp_environment(config)
-    agent = create_reinforce_agent(config, env)
+
+    # Create agent based on type
+    agent_type = config['agent'].get('type', 'reinforce')
+    if agent_type == 'mdp_planning':
+        agent = create_mdp_planning_agent(config, env)
+    else:
+        agent = create_reinforce_agent(config, env)
 
     # Create trainer
     trainer = MDPTrainer(
@@ -290,6 +322,14 @@ def run_mdp_experiment(config: dict, exp_dir: Path):
     # Save final checkpoint
     checkpoint_path = exp_dir / 'final_checkpoint.pt'
     agent.save(str(checkpoint_path))
+
+    # Save planning metrics if using planning agent
+    if isinstance(agent, MDPPlanningAgent):
+        planning_metrics = agent.get_planning_metrics()
+        planning_metrics_path = exp_dir / 'planning_metrics.yaml'
+        with open(planning_metrics_path, 'w') as f:
+            yaml.dump(planning_metrics, f, default_flow_style=False)
+        print(f"Saved planning metrics to: {planning_metrics_path}")
 
     # Save config
     config_path = exp_dir / 'config.yaml'
@@ -340,7 +380,7 @@ def main():
 
     if exp_type == 'bandit':
         run_bandit_experiment(config, exp_dir)
-    elif exp_type == 'mdp':
+    elif exp_type == 'mdp' or exp_type == 'mdp_planning':
         run_mdp_experiment(config, exp_dir)
     else:
         raise ValueError(f"Unknown experiment type: {exp_type}")
