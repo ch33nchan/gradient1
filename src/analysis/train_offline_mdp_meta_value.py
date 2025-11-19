@@ -33,6 +33,35 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
+def convert_to_json_serializable(obj: Any) -> Any:
+    """Convert numpy/torch types to JSON-serializable Python types.
+
+    Args:
+        obj: Object to convert (can be scalar, dict, list, etc.)
+
+    Returns:
+        JSON-serializable version of obj
+    """
+    if isinstance(obj, dict):
+        return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_json_serializable(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, torch.Tensor):
+        if obj.numel() == 1:
+            return obj.item()
+        else:
+            return obj.tolist()
+    else:
+        # Plain Python types: return as-is
+        return obj
+
+
 class MetaValueNetwork(nn.Module):
     """MLP regressor for predicting policy returns from parameters.
 
@@ -365,13 +394,16 @@ def save_outputs(
     # 2. Save metrics
     metrics_path = output_dir / 'metrics.json'
     final_metrics = history[-1]
+    metrics_dict = {
+        'final_metrics': final_metrics,
+        'best_val_pearson': max(h['val_pearson'] for h in history),
+        'training_args': vars(args),
+        'n_epochs': len(history),
+    }
+    # Convert numpy/torch types to JSON-serializable Python types
+    metrics_clean = convert_to_json_serializable(metrics_dict)
     with open(metrics_path, 'w') as f:
-        json.dump({
-            'final_metrics': final_metrics,
-            'best_val_pearson': max(h['val_pearson'] for h in history),
-            'training_args': vars(args),
-            'n_epochs': len(history),
-        }, f, indent=2)
+        json.dump(metrics_clean, f, indent=2)
     print(f"Saved metrics: {metrics_path}")
 
     # 3. Save full training history
