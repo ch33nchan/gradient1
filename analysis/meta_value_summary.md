@@ -144,3 +144,27 @@ Synthetic noise ablation study identified the empirical correlation threshold:
 - This is **0x below** the minimum required quality
 
 Conclusion: Meta-value correlation must be > 0.00 for planning to help.
+
+
+## Meta-Value Quality Threshold (Noise Ablation)
+
+Synthetic noise ablation study identified the empirical correlation threshold:
+
+- **Threshold: ≈0.00**
+- Below this correlation, planning performs worse than random selection
+- Current online training achieves 0.018-0.070 correlation
+- This is **0x below** the minimum required quality
+
+Conclusion: Meta-value correlation must be > 0.00 for planning to help.
+
+
+## Meta-Value Quality Threshold (Noise Ablation)
+
+Synthetic noise ablation study identified the empirical correlation threshold:
+
+- **Threshold: ≈0.00**
+- Below this correlation, planning performs worse than random selection
+- Current online training achieves 0.018-0.070 correlation
+- This is **0x below** the minimum required quality
+
+Conclusion: Meta-value correlation must be > 0.00 for planning to help.
