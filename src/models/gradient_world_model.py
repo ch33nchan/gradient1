@@ -40,20 +40,18 @@ class GradientPredictor(nn.Module):
         input_dim = n_arms * 2
 
         # CPU-optimized architecture
+        # Note: No BatchNorm to support single-sample inputs
         self.network = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
             nn.Dropout(dropout),
 
             nn.Linear(hidden_dim, hidden_dim * 2),
             nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim * 2),
             nn.Dropout(dropout),
 
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
 
             nn.Linear(hidden_dim, n_arms)  # Output: predicted gradient
         )
@@ -130,10 +128,10 @@ class MetaValueNetwork(nn.Module):
         """
         super().__init__()
 
+        # Note: No BatchNorm to support single-sample inputs
         self.network = nn.Sequential(
             nn.Linear(param_dim, hidden_dim),
             nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
 
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -158,6 +156,8 @@ class MetaValueNetwork(nn.Module):
 
         Returns:
             Value estimate [batch_size] or scalar
+            - Single input (1D): returns 0D tensor (scalar)
+            - Batched input (2D): returns 1D tensor (batch_size,)
         """
         if theta.dim() == 1:
             theta = theta.unsqueeze(0)
@@ -165,10 +165,11 @@ class MetaValueNetwork(nn.Module):
         else:
             squeeze_output = False
 
-        value = self.network(theta)
+        value = self.network(theta)  # Shape: (batch_size, 1)
+        value = value.squeeze(-1)     # Shape: (batch_size,)
 
         if squeeze_output:
-            value = value.squeeze()
+            value = value.squeeze(0)  # Shape: () - scalar
 
         return value
 

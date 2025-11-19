@@ -245,6 +245,7 @@ def build_dataset_from_run(
             'target_return': eval_stats['mean_return'],
             'target_std': eval_stats['std_return'],
             'n_eval_episodes': n_eval_episodes,
+            'success_rate': eval_stats['success_rate'],  # Success rate across eval episodes
 
             # Features
             'policy_params': features['policy_params'],
@@ -262,7 +263,7 @@ def build_dataset_from_run(
 
             # Optional: Episode statistics
             'eval_episode_lengths': eval_stats['lengths'],
-            'eval_success_rate': eval_stats['success_rate'],
+            'eval_success_rate': eval_stats['success_rate'],  # Kept for backward compatibility
             'eval_min_return': eval_stats['min_return'],
             'eval_max_return': eval_stats['max_return'],
         }

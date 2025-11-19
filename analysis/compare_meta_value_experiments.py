@@ -5,19 +5,20 @@ Generates:
 - Comparison plot showing rewards, regret, gradient error over time
 - CSV with final statistics
 - Markdown summary
+
+Usage:
+    python analysis/compare_meta_value_experiments.py \
+        --no-planning-dir logs/meta_value_improved/run_2025-11-13_20-28-09 \
+        --planning-dir logs/planning_meta_value_improved/run_2025-11-13_21-02-08 \
+        --output-dir analysis
 """
 
+import argparse
+import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
-
-# Paths to experiment results
-NO_PLANNING_PATH = Path("logs/meta_value_improved/run_2025-11-13_20-28-09/metrics.csv")
-PLANNING_PATH = Path("logs/planning_meta_value_improved/run_2025-11-13_21-02-08/metrics.csv")
-
-OUTPUT_DIR = Path("analysis")
-OUTPUT_DIR.mkdir(exist_ok=True)
 
 def load_metrics(path):
     """Load metrics CSV."""
@@ -122,9 +123,51 @@ def create_comparison_plot(df_no_planning, df_planning):
     return fig
 
 def main():
+    parser = argparse.ArgumentParser(
+        description='Compare meta-value experiments with and without planning'
+    )
+    parser.add_argument(
+        '--no-planning-dir',
+        type=str,
+        required=True,
+        help='Path to no-planning experiment directory (containing metrics.csv)'
+    )
+    parser.add_argument(
+        '--planning-dir',
+        type=str,
+        required=True,
+        help='Path to planning experiment directory (containing metrics.csv)'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='analysis',
+        help='Output directory for plots and summary (default: analysis)'
+    )
+
+    args = parser.parse_args()
+
+    # Construct paths
+    no_planning_path = Path(args.no_planning_dir) / 'metrics.csv'
+    planning_path = Path(args.planning_dir) / 'metrics.csv'
+    output_dir = Path(args.output_dir)
+
+    # Check paths exist
+    if not no_planning_path.exists():
+        print(f"Error: No-planning metrics not found: {no_planning_path}", file=sys.stderr)
+        print(f"Expected metrics.csv in: {args.no_planning_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    if not planning_path.exists():
+        print(f"Error: Planning metrics not found: {planning_path}", file=sys.stderr)
+        print(f"Expected metrics.csv in: {args.planning_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     print("Loading metrics...")
-    df_no_planning = load_metrics(NO_PLANNING_PATH)
-    df_planning = load_metrics(PLANNING_PATH)
+    df_no_planning = load_metrics(no_planning_path)
+    df_planning = load_metrics(planning_path)
 
     print("Computing final 500-episode statistics...")
     stats_no_planning = compute_final_stats(df_no_planning)
@@ -180,14 +223,14 @@ def main():
     print(comparison.to_string(index=False))
 
     # Save CSV
-    comparison.to_csv(OUTPUT_DIR / "meta_value_vs_planning_overview.csv", index=False)
-    print(f"\nSaved: {OUTPUT_DIR / 'meta_value_vs_planning_overview.csv'}")
+    comparison.to_csv(output_dir / "meta_value_vs_planning_overview.csv", index=False)
+    print(f"\nSaved: {output_dir / 'meta_value_vs_planning_overview.csv'}")
 
     # Create plot
     print("\nGenerating comparison plot...")
     fig = create_comparison_plot(df_no_planning, df_planning)
-    fig.savefig(OUTPUT_DIR / "meta_value_vs_planning_overview.png", dpi=150, bbox_inches='tight')
-    print(f"Saved: {OUTPUT_DIR / 'meta_value_vs_planning_overview.png'}")
+    fig.savefig(output_dir / "meta_value_vs_planning_overview.png", dpi=150, bbox_inches='tight')
+    print(f"Saved: {output_dir / 'meta_value_vs_planning_overview.png'}")
 
     # Generate markdown summary
     regret_ratio = stats_planning['self_gradient_cumulative_regret'] / stats_no_planning['self_gradient_cumulative_regret']
@@ -274,10 +317,10 @@ This is worse than random exploration because:
 - Planning run: `logs/planning_meta_value_improved/run_2025-11-13_21-02-08/`
 """
 
-    with open(OUTPUT_DIR / "meta_value_summary.md", 'w') as f:
+    with open(output_dir / "meta_value_summary.md", 'w') as f:
         f.write(markdown)
 
-    print(f"Saved: {OUTPUT_DIR / 'meta_value_summary.md'}")
+    print(f"Saved: {output_dir / 'meta_value_summary.md'}")
 
     print("\n" + "="*80)
     print("SUMMARY")

@@ -6,16 +6,19 @@ Analyzes planning trace to identify systematic errors:
 2. Are meta-values inversely correlated with actual rewards?
 3. Does planning have bugs (off-by-one, wrong normalization)?
 4. What's the relationship between meta-value estimates and arm quality?
+
+Usage:
+    python analysis/diagnose_planning_failure.py \
+        --trace-path logs/planning_test_instrumented/run_XXX/planning_trace.csv \
+        --output-dir analysis
 """
 
+import argparse
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-
-# Path to planning trace
-TRACE_PATH = Path("logs/planning_test_instrumented/run_2025-11-18_06-53-11/planning_trace.csv")
-OUTPUT_DIR = Path("analysis")
 
 def load_trace(path):
     """Load planning trace."""
@@ -206,14 +209,49 @@ def create_diagnostic_plots(df, optimal_arm=3):
 
 def main():
     """Main diagnostic routine."""
+    parser = argparse.ArgumentParser(
+        description='Diagnose planning failures by analyzing planning trace'
+    )
+    parser.add_argument(
+        '--trace-path',
+        type=str,
+        required=True,
+        help='Path to planning_trace.csv file'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='analysis',
+        help='Output directory for diagnostic plots (default: analysis)'
+    )
+    parser.add_argument(
+        '--optimal-arm',
+        type=int,
+        default=3,
+        help='Index of optimal arm (default: 3)'
+    )
+
+    args = parser.parse_args()
+
+    trace_path = Path(args.trace_path)
+    output_dir = Path(args.output_dir)
+
+    # Check path exists
+    if not trace_path.exists():
+        print(f"Error: Planning trace not found: {trace_path}", file=sys.stderr)
+        print(f"Expected to find planning_trace.csv at the specified path", file=sys.stderr)
+        sys.exit(1)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     print("Loading planning trace...")
-    df = load_trace(TRACE_PATH)
+    df = load_trace(trace_path)
 
     print(f"Loaded {len(df)} planning decisions")
     print(f"Episodes: {df['episode'].min()} to {df['episode'].max()}")
 
-    # Optimal arm (known from environment config)
-    optimal_arm = 3
+    # Optimal arm from CLI argument
+    optimal_arm = args.optimal_arm
 
     # Run analyses
     analyze_arm_selection(df, optimal_arm)
@@ -224,7 +262,7 @@ def main():
     # Create plots
     print("\nGenerating diagnostic plots...")
     fig = create_diagnostic_plots(df, optimal_arm)
-    output_path = OUTPUT_DIR / "planning_diagnosis.png"
+    output_path = output_dir / "planning_diagnosis.png"
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"Saved: {output_path}")
 
