@@ -721,7 +721,7 @@ python -m experiments.run_experiment --config experiments/chain_mdp_planning.yam
 
 **Command-line usage**:
 ```bash
-python -m analysis.mdp_planning_comparison \
+python analysis/mdp_planning_comparison.py \
   --baseline-dir logs/chain_mdp_baseline/run_2025-11-19_06-18-51 \
   --planning-dir logs/chain_mdp_planning/run_2025-11-19_12-34-56 \
   --output-dir analysis/planning_comparison
@@ -791,7 +791,7 @@ python -m src.analysis.evaluate_mdp_meta_value \
 python -m experiments.run_experiment --config experiments/chain_mdp_planning.yaml
 
 # 6. Compare performance
-python -m analysis.mdp_planning_comparison \
+python analysis/mdp_planning_comparison.py \
   --baseline-dir logs/chain_mdp_baseline/run_2025-11-19_06-18-51 \
   --planning-dir logs/chain_mdp_planning/run_2025-11-19_12-34-56 \
   --output-dir analysis/planning_comparison
