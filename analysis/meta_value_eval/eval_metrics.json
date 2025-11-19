@@ -1,0 +1,19 @@
+{
+  "split": "val",
+  "n_samples": 3,
+  "metrics": {
+    "mae": 0.039452750235795975,
+    "rmse": 0.039452772587537766,
+    "mse": 0.0015565213980153203,
+    "pearson": NaN,
+    "spearman": NaN,
+    "r2": -Infinity,
+    "mean_abs_error_relative": 0.042755868285894394,
+    "max_abs_error": 0.039514362812042236,
+    "mean_true": 0.9227446913719177,
+    "std_true": 0.0,
+    "mean_pred": 0.8832919597625732,
+    "std_pred": 4.364065534900874e-05
+  },
+  "timestamp": "2025-11-19T16:51:11.713377"
+}
