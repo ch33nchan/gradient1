@@ -258,7 +258,8 @@ def run_mdp_experiment(config: dict, exp_dir: Path):
         env=env,
         agent=agent,
         log_dir=exp_dir,
-        log_interval=config['training'].get('log_interval', 10)
+        log_interval=config['training'].get('log_interval', 10),
+        save_interval=config['training'].get('save_interval', 0)
     )
 
     # Train

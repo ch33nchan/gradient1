@@ -311,7 +311,7 @@ class REINFORCEAgent:
         Args:
             filepath: Path to checkpoint
         """
-        checkpoint = torch.load(filepath)
+        checkpoint = torch.load(filepath, weights_only=False)
         self.policy.load_state_dict(checkpoint['policy_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.episode_count = checkpoint['episode_count']

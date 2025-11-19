@@ -28,6 +28,7 @@ class MDPTrainer:
         agent: REINFORCEAgent,
         log_dir: Optional[Path] = None,
         log_interval: int = 10,
+        save_interval: int = 0,
     ):
         """Initialize MDP trainer.
 
@@ -36,10 +37,13 @@ class MDPTrainer:
             agent: REINFORCE agent
             log_dir: Directory for logs
             log_interval: Frequency of logging (in episodes)
+            save_interval: Frequency of checkpoint saving (0 = no periodic saves)
         """
         self.env = env
         self.agent = agent
         self.log_interval = log_interval
+        self.save_interval = save_interval
+        self.log_dir = log_dir
 
         # Setup logging
         if log_dir is not None:
@@ -157,6 +161,13 @@ class MDPTrainer:
                     f"Loss: {self.metrics['policy_losses'][-1]:.4f} | "
                     f"Speed: {eps_per_sec:.1f} eps/s"
                 )
+
+            # Save periodic checkpoint
+            if self.save_interval > 0 and (episode + 1) % self.save_interval == 0:
+                if self.log_dir is not None:
+                    checkpoint_path = self.log_dir / f'checkpoint_ep_{episode + 1}.pt'
+                    self.agent.save(str(checkpoint_path))
+                    self.logger.info(f"Saved checkpoint: {checkpoint_path}")
 
         elapsed = time.time() - start_time
         self.logger.info(f"Training completed in {elapsed:.1f}s ({self.total_episodes / elapsed:.1f} eps/s)")

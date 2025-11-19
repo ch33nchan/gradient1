@@ -1,0 +1,35 @@
+# Chain MDP Test Run for Meta-Value Dataset Building
+#
+# This config runs a short training run with periodic checkpoints
+# for testing the meta-value dataset builder.
+
+experiment:
+  name: "chain_mdp_dataset_test"
+  type: "mdp"
+  description: "Short run for testing dataset builder"
+
+environment:
+  env_type: "chain_mdp"
+  n_states: 10
+  max_steps: 100
+  discount_factor: 0.99
+  seed: 42
+
+agent:
+  type: "reinforce"
+  learning_rate: 0.01
+  hidden_dim: 64
+  use_baseline: true
+  entropy_bonus: 0.01
+
+training:
+  n_episodes: 100  # Short run for testing
+  log_interval: 20
+  eval_episodes: 20
+  plot_window: 10
+  save_interval: 20  # Save checkpoint every 20 episodes
+
+logging:
+  log_dir: "logs"
+  save_metrics: true
+  save_plots: true
