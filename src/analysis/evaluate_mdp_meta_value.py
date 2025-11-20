@@ -144,13 +144,18 @@ def analyze_calibration(y_true: np.ndarray, y_pred: np.ndarray, n_buckets: int =
     pred_max = float(y_pred.max())
     if pred_min == pred_max:
         # Degenerate case: all predictions same → single bucket
+        true_mean = float(y_true.mean())
+        pred_mean = float(y_pred.mean())
+        mae = float(np.mean(np.abs(y_pred - y_true)))
         return pd.DataFrame([{
             "bucket": 0,
-            "count": int(n),
-            "true_mean": float(y_true.mean()),
-            "pred_mean": float(y_pred.mean()),
+            "n_samples": int(n),
+            "true_mean": true_mean,
+            "pred_mean": pred_mean,
             "pred_min": pred_min,
             "pred_max": pred_max,
+            "mae": mae,
+            "bias": pred_mean - true_mean,
         }])
 
     edges = np.linspace(pred_min, pred_max, n_buckets + 1, dtype=np.float32)
@@ -169,24 +174,35 @@ def analyze_calibration(y_true: np.ndarray, y_pred: np.ndarray, n_buckets: int =
         bucket_y_true = y_true[mask]
         bucket_y_pred = y_pred[mask]
 
+        true_mean = float(bucket_y_true.mean())
+        pred_mean = float(bucket_y_pred.mean())
+        bucket_mae = float(np.mean(np.abs(bucket_y_pred - bucket_y_true)))
+
         rows.append({
             "bucket": i,
-            "count": int(mask.sum()),
-            "true_mean": float(bucket_y_true.mean()),
-            "pred_mean": float(bucket_y_pred.mean()),
+            "n_samples": int(mask.sum()),
+            "true_mean": true_mean,
+            "pred_mean": pred_mean,
             "pred_min": float(bucket_y_pred.min()),
             "pred_max": float(bucket_y_pred.max()),
+            "mae": bucket_mae,
+            "bias": pred_mean - true_mean,
         })
 
     if not rows:
         # Extremely degenerate fallback; should not happen, but keep it safe
+        true_mean = float(y_true.mean())
+        pred_mean = float(y_pred.mean())
+        mae = float(np.mean(np.abs(y_pred - y_true)))
         rows.append({
             "bucket": 0,
-            "count": int(n),
-            "true_mean": float(y_true.mean()),
-            "pred_mean": float(y_pred.mean()),
+            "n_samples": int(n),
+            "true_mean": true_mean,
+            "pred_mean": pred_mean,
             "pred_min": pred_min,
             "pred_max": pred_max,
+            "mae": mae,
+            "bias": pred_mean - true_mean,
         })
 
     return pd.DataFrame(rows)
